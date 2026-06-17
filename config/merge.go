@@ -69,7 +69,7 @@ func MergeFieldMapping(path string, entries map[string]FieldMappingEntry) error 
 		} else {
 			keyNode := &yaml.Node{Kind: yaml.ScalarNode, Value: dbCol, Tag: "!!str"}
 			fmNode.Content = append(fmNode.Content, keyNode, valNode)
-			// Update index in case the same key appears again in entries.
+			// Update index so any future lookup of dbCol finds the right value node.
 			existing[dbCol] = len(fmNode.Content) - 1
 		}
 	}

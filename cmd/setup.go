@@ -33,7 +33,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	}
 	defs, pathByName := chromeFieldDefs()
 
-	fieldsetIDs := []int{}
+	var fieldsetIDs []int
 	if cfg.SnipeIT.CustomFieldsetID != 0 {
 		fieldsetIDs = append(fieldsetIDs, cfg.SnipeIT.CustomFieldsetID)
 	}
@@ -41,13 +41,14 @@ func runSetup(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("snipe_it.custom_fieldset_id is required for setup")
 	}
 
-	dbColByName, err := sc.SetupFields(fieldsetIDs, defs)
-	if err != nil {
-		return err
-	}
 	if setupDryRun {
 		snipeLog.WithField("fields", len(defs)).Warn("[DRY RUN] would create/update fields and merge config")
 		return nil
+	}
+
+	dbColByName, err := sc.SetupFields(fieldsetIDs, defs)
+	if err != nil {
+		return err
 	}
 
 	merge := map[string]config.FieldMappingEntry{}
