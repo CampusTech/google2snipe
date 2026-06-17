@@ -162,8 +162,8 @@ recent-user fallback requires FULL. If `projection: basic` is set, only the
 ## Field-mapping engine (ported)
 
 Keep the gjson `field_mapping` source (path + optional transform) against the
-device JSON, and the reusable transforms: date/`unix_to_iso`/ISO passthrough,
-`mac_colons`/`mac_dashes`, `bool_yes_no`, `uppercase`/`lowercase`,
+device JSON, and the reusable transforms: `date_only`/`datetime`/`unix_to_iso` date
+normalization, `mac_colons`/`mac_dashes`, `bool_yes_no`, `uppercase`/`lowercase`,
 `comma_thousands`, byte/GB conversions, etc. Add ChromeOS-handy transforms as
 needed. Empty/missing/unparseable → `""` (never written) for unit/date transforms.
 
@@ -244,13 +244,13 @@ Idempotently create a standard ChromeOS field set in Snipe-IT and merge
 | Chrome: Disk Capacity (GB) | `diskSpaceUsage.capacityBytes` | `bytes_to_gb` | numeric |
 | Chrome: Disk Used (GB) | `diskSpaceUsage.usedBytes` | `bytes_to_gb` | numeric |
 | Chrome: License Type | `deviceLicenseType` | | text |
-| Chrome: Manufacture Date | `manufactureDate` | | text |
+| Chrome: Manufacture Date | `manufactureDate` | `date_only` | DATE |
 | Chrome: Order Number | `orderNumber` | | text |
-| Chrome: Auto-Update Through | `autoUpdateThrough` | | text |
-| Chrome: Support End Date | `supportEndDate` | | text |
-| Chrome: First Enrollment | `firstEnrollmentTime` | | text |
-| Chrome: Last Enrollment | `lastEnrollmentTime` | | text |
-| Chrome: Last Sync | `lastSync` | | text |
+| Chrome: Auto-Update Through | `autoUpdateThrough` | `date_only` | DATE |
+| Chrome: Support End Date | `supportEndDate` | `date_only` | DATE |
+| Chrome: First Enrollment | `firstEnrollmentTime` | `date_only` | DATE |
+| Chrome: Last Enrollment | `lastEnrollmentTime` | `date_only` | DATE |
+| Chrome: Last Sync | `lastSync` | `datetime` | text |
 | Chrome: TPM Spec Level | `tpmVersionInfo.specLevel` | | text |
 | Chrome: Notes | `notes` | | text |
 | Chrome: Recent Users | `recentUsers.#.email` | | text |
@@ -275,10 +275,15 @@ therefore correct-but-lenient:
   returns separator-less MACs (`a4bb6d123456`) that fail Snipe's `mac_address`
   rule until regrouped to `a4:bb:6d:12:34:56`.
 - Size fields use **NUMERIC** (Laravel `numeric` accepts the decimal GB output).
-- Date/timestamp fields are **ANY** (text) on purpose: ChromeOS emits RFC3339
-  (`2024-05-01T12:00:00.000Z`), which Snipe's `DATE` format (`YYYY-MM-DD`) would
-  reject. An optional date-normalize transform + DATE format can be layered later
-  for pure-date fields (`manufactureDate`, `autoUpdateThrough`).
+- Date fields use **DATE** format with a normalize transform. Snipe's `DATE`
+  format maps to Laravel's `date` rule (PHP `strtotime`), which accepts full
+  RFC3339 timestamps (`2024-05-01T12:00:00.000Z`) — not just `YYYY-MM-DD` — so
+  DATE is safe for ChromeOS timestamps. We still normalize on write: `date_only`
+  → `YYYY-MM-DD` for lifecycle dates (`manufactureDate`, `autoUpdateThrough`,
+  `supportEndDate`, `firstEnrollmentTime`, `lastEnrollmentTime`), and `datetime`
+  → `YYYY-MM-DD HH:MM:SS` for `lastSync` (kept ANY to preserve time-of-day).
+  Normalizing yields clean, sortable values and sidesteps any `strtotime`
+  fractional-second edge case.
 
 **Optional / opt-in (documented in `settings.example.yaml`, NOT created by default):**
 
