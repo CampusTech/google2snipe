@@ -32,7 +32,7 @@ func TestApplyMappingSkipsEmpty(t *testing.T) {
 		"_snipeit_notes_3":  {Path: "notes"}, // empty -> skipped
 	}
 	e := testEngine(t, cfg)
-	d := dev(t, &admin.ChromeOsDevice{SerialNumber: "S1", SystemRamTotal: 8000000000})
+	d := dev(t, &admin.ChromeOsDevice{SerialNumber: "S1", SystemRamTotal: int64(8000000000)})
 	out := e.applyMapping(d)
 	if out["_snipeit_serial_1"] != "S1" {
 		t.Errorf("serial = %q", out["_snipeit_serial_1"])
@@ -56,6 +56,10 @@ func TestStatusIDMapAndDefault(t *testing.T) {
 	if got := e.statusID(dev(t, &admin.ChromeOsDevice{Status: "ACTIVE"})); got != 1 {
 		t.Errorf("unmapped status = %d, want default 1", got)
 	}
+	cfg.SnipeIT.StatusMap["ZERO_MAPPED"] = 0
+	if got := e.statusID(dev(t, &admin.ChromeOsDevice{Status: "ZERO_MAPPED"})); got != 1 {
+		t.Errorf("zero-mapped status should fall through to default 1, got %d", got)
+	}
 }
 
 func TestAssetTagTemplate(t *testing.T) {
@@ -67,5 +71,10 @@ func TestAssetTagTemplate(t *testing.T) {
 	}
 	if got := e.assetTag(dev(t, &admin.ChromeOsDevice{})); got != "" {
 		t.Errorf("empty annotatedAssetId should yield empty tag, got %q", got)
+	}
+	cfg2 := &config.Config{} // AssetTag.Template stays ""
+	e2 := testEngine(t, cfg2)
+	if got := e2.assetTag(dev(t, &admin.ChromeOsDevice{AnnotatedAssetId: "CG-42"})); got != "" {
+		t.Errorf("empty template should yield empty tag, got %q", got)
 	}
 }
