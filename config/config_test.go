@@ -72,3 +72,116 @@ snipe_it: {url: https://x, api_key: k, default_status_id: 1, default_category_id
 		t.Fatal("expected error: missing credentials_file and GOOGLE_APPLICATION_CREDENTIALS")
 	}
 }
+
+// TestEnvOverrideCredentials verifies GOOGLE_APPLICATION_CREDENTIALS is used when
+// credentials_file is absent from YAML, but that YAML wins when both are set.
+func TestEnvOverrideCredentials(t *testing.T) {
+	baseYAML := `
+google:
+  impersonate_subject: a@b.com
+snipe_it:
+  url: https://snipe.example.com
+  api_key: abc
+  default_status_id: 1
+  default_category_id: 2
+`
+	// Case 1: env var only — no credentials_file in YAML.
+	t.Run("env_only", func(t *testing.T) {
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/env/sa.json")
+		p := writeTemp(t, baseYAML)
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Google.CredentialsFile != "/env/sa.json" {
+			t.Errorf("CredentialsFile = %q, want /env/sa.json", cfg.Google.CredentialsFile)
+		}
+	})
+
+	// Case 2: YAML credentials_file set AND env var set — YAML wins.
+	t.Run("yaml_wins_over_env", func(t *testing.T) {
+		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/env/sa.json")
+		p := writeTemp(t, `
+google:
+  credentials_file: /yaml/sa.json
+  impersonate_subject: a@b.com
+snipe_it:
+  url: https://snipe.example.com
+  api_key: abc
+  default_status_id: 1
+  default_category_id: 2
+`)
+		cfg, err := Load(p)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Google.CredentialsFile != "/yaml/sa.json" {
+			t.Errorf("CredentialsFile = %q, want /yaml/sa.json (YAML should win)", cfg.Google.CredentialsFile)
+		}
+	})
+}
+
+// TestCheckoutEnumRejection verifies that invalid mode and match_field values are rejected.
+func TestCheckoutEnumRejection(t *testing.T) {
+	base := `
+google:
+  credentials_file: /tmp/sa.json
+  impersonate_subject: a@b.com
+snipe_it:
+  url: https://snipe.example.com
+  api_key: abc
+  default_status_id: 1
+  default_category_id: 2
+`
+	t.Run("bad_mode", func(t *testing.T) {
+		p := writeTemp(t, base+`
+sync:
+  checkout:
+    mode: bogus
+`)
+		if _, err := Load(p); err == nil {
+			t.Fatal("expected error for invalid checkout.mode")
+		}
+	})
+
+	t.Run("bad_match_field", func(t *testing.T) {
+		p := writeTemp(t, base+`
+sync:
+  checkout:
+    match_field: notafield
+`)
+		if _, err := Load(p); err == nil {
+			t.Fatal("expected error for invalid checkout.match_field")
+		}
+	})
+}
+
+// TestFullOnlyPathsWarningNotError verifies that a field_mapping with a FullOnly path
+// under projection=basic is a warning (Load succeeds) and the mapping is present.
+func TestFullOnlyPathsWarningNotError(t *testing.T) {
+	p := writeTemp(t, `
+google:
+  credentials_file: /tmp/sa.json
+  impersonate_subject: a@b.com
+  projection: basic
+snipe_it:
+  url: https://snipe.example.com
+  api_key: abc
+  default_status_id: 1
+  default_category_id: 2
+sync:
+  field_mapping:
+    _snipeit_recent_user_1: recentUsers.0.email
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load returned error (expected only a warning): %v", err)
+	}
+	got, ok := cfg.Sync.FieldMapping["_snipeit_recent_user_1"]
+	if !ok {
+		t.Fatal("field_mapping entry missing after Load")
+	}
+	if got.Path != "recentUsers.0.email" {
+		t.Errorf("mapping path = %q, want recentUsers.0.email", got.Path)
+	}
+}

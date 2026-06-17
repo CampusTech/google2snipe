@@ -171,8 +171,11 @@ func (c *Config) Validate() error {
 	if c.Google.Projection != "full" && c.Google.Projection != "basic" {
 		return fmt.Errorf("google.projection must be full or basic, got %q", c.Google.Projection)
 	}
-	if c.SnipeIT.URL == "" || c.SnipeIT.APIKey == "" {
-		return fmt.Errorf("snipe_it.url and snipe_it.api_key are required")
+	if c.SnipeIT.URL == "" {
+		return fmt.Errorf("snipe_it.url is required")
+	}
+	if c.SnipeIT.APIKey == "" {
+		return fmt.Errorf("snipe_it.api_key is required")
 	}
 	if c.SnipeIT.DefaultStatusID == 0 {
 		return fmt.Errorf("snipe_it.default_status_id is required")
