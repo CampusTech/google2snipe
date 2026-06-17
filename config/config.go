@@ -38,17 +38,18 @@ type SnipeITConfig struct {
 }
 
 type SyncConfig struct {
-	DryRun       bool                         `yaml:"dry_run"`
-	Force        bool                         `yaml:"force"`
-	RateLimit    bool                         `yaml:"rate_limit"`
-	UpdateOnly   bool                         `yaml:"update_only"`
-	UseCache     bool                         `yaml:"use_cache"`
-	CacheDir     string                       `yaml:"cache_dir"`
-	SetName      bool                         `yaml:"set_name"`
-	NameTemplate string                       `yaml:"name_template"`
-	AssetTag     AssetTagConfig               `yaml:"asset_tag"`
-	FieldMapping map[string]FieldMappingEntry `yaml:"field_mapping"`
-	Checkout     CheckoutConfig               `yaml:"checkout"`
+	DryRun           bool                         `yaml:"dry_run"`
+	Force            bool                         `yaml:"force"`
+	RateLimit        bool                         `yaml:"rate_limit"`
+	UpdateOnly       bool                         `yaml:"update_only"`
+	UseCache         bool                         `yaml:"use_cache"`
+	CacheDir         string                       `yaml:"cache_dir"`
+	SetName          bool                         `yaml:"set_name"`
+	NameTemplate     string                       `yaml:"name_template"`
+	StripModelVendor bool                         `yaml:"strip_model_vendor"`
+	AssetTag         AssetTagConfig               `yaml:"asset_tag"`
+	FieldMapping     map[string]FieldMappingEntry `yaml:"field_mapping"`
+	Checkout         CheckoutConfig               `yaml:"checkout"`
 }
 
 type AssetTagConfig struct {

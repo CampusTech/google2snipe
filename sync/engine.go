@@ -172,6 +172,15 @@ func (e *Engine) ensureModel(dev google.Device) (int, error) {
 	if name == "" {
 		name = "Unknown ChromeOS Device"
 	}
+	// Optionally drop the leading vendor token from the model name so it isn't
+	// duplicated with the manufacturer (e.g. "HP Chromebook 14c" -> "Chromebook 14c").
+	if e.cfg.Sync.StripModelVendor {
+		if vendor := modelVendor(dev.Model); vendor != "" {
+			if stripped := strings.TrimSpace(strings.TrimPrefix(name, vendor)); stripped != "" {
+				name = stripped
+			}
+		}
+	}
 	if m, ok := e.models[name]; ok {
 		return m.ID, nil
 	}

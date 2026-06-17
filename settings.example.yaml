@@ -43,6 +43,10 @@ sync:
   update_only: false
   set_name: false
   name_template: "{annotatedAssetId}"
+  # Drop the leading vendor token from auto-created model names so it isn't
+  # duplicated with the manufacturer (e.g. "HP Chromebook 14c" -> model
+  # "Chromebook 14c" + manufacturer "HP"). Off by default = keep the full string.
+  strip_model_vendor: false
   cache_dir: .cache
   asset_tag:
     template: "{annotatedAssetId}"   # empty render -> Snipe auto-assigns
