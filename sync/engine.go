@@ -92,3 +92,147 @@ func (e *Engine) assetTag(dev google.Device) string {
 	})
 	return strings.TrimSpace(out)
 }
+
+// Warm preloads models, manufacturers, and users into in-memory indexes.
+func (e *Engine) Warm() error {
+	models, err := e.snipe.ListAllModels()
+	if err != nil {
+		return err
+	}
+	for _, m := range models {
+		e.models[m.Name] = m
+	}
+	manufs, err := e.snipe.ListAllManufacturers()
+	if err != nil {
+		return err
+	}
+	for _, m := range manufs {
+		e.manufacturers[strings.ToLower(m.Name)] = m
+	}
+	users, err := e.snipe.ListAllUsers()
+	if err != nil {
+		return err
+	}
+	for _, u := range users {
+		key := userKey(u, e.cfg.Sync.Checkout.MatchField)
+		if key != "" {
+			e.userIndex[strings.ToLower(key)] = u.ID
+		}
+	}
+	e.log.WithFields(logrus.Fields{
+		"models": len(e.models), "manufacturers": len(e.manufacturers), "users": len(e.userIndex),
+	}).Info("warmed snipe-it caches")
+	return nil
+}
+
+func userKey(u snipe.User, matchField string) string {
+	switch matchField {
+	case "username":
+		return u.Username
+	case "employee_num":
+		return u.EmployeeNum
+	default:
+		return u.Email
+	}
+}
+
+// ensureManufacturer resolves (or creates) a Snipe manufacturer from the
+// device's model vendor (first token of the model string).
+func (e *Engine) ensureManufacturer(dev google.Device) (int, error) {
+	vendor := modelVendor(dev.Model)
+	if vendor == "" {
+		return e.cfg.SnipeIT.DefaultManufacturerID, nil
+	}
+	if id, ok := e.cfg.SnipeIT.ManufacturerIDs[strings.ToLower(vendor)]; ok && id != 0 {
+		return id, nil
+	}
+	if m, ok := e.manufacturers[strings.ToLower(vendor)]; ok {
+		return m.ID, nil
+	}
+	m, err := e.snipe.CreateManufacturer(vendor)
+	if err != nil {
+		return 0, err
+	}
+	e.manufacturers[strings.ToLower(vendor)] = m
+	return m.ID, nil
+}
+
+func modelVendor(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return ""
+	}
+	return strings.Fields(model)[0]
+}
+
+// ensureModel resolves (or creates) a Snipe model from the device model name.
+func (e *Engine) ensureModel(dev google.Device) (int, error) {
+	name := strings.TrimSpace(dev.Model)
+	if name == "" {
+		name = "Unknown ChromeOS Device"
+	}
+	if m, ok := e.models[name]; ok {
+		return m.ID, nil
+	}
+	manufID, err := e.ensureManufacturer(dev)
+	if err != nil {
+		return 0, err
+	}
+	m, err := e.snipe.CreateModel(snipe.Model{
+		Name:           name,
+		ManufacturerID: manufID,
+		CategoryID:     e.cfg.SnipeIT.DefaultCategoryID,
+		FieldsetID:     e.cfg.SnipeIT.CustomFieldsetID,
+	})
+	if err != nil {
+		return 0, err
+	}
+	e.models[name] = m
+	return m.ID, nil
+}
+
+// resolveCheckoutUser picks the Snipe user ID to check the device out to,
+// per the checkout config. Returns ok=false when checkout is disabled or no
+// matching user is found.
+func (e *Engine) resolveCheckoutUser(dev google.Device) (int, bool) {
+	co := e.cfg.Sync.Checkout
+	if !co.Enabled {
+		return 0, false
+	}
+	var candidate string
+	if co.UseAnnotatedUser && dev.AnnotatedUser != "" {
+		candidate = dev.AnnotatedUser
+	} else if co.FallbackToRecent {
+		for _, ru := range dev.RecentUsers {
+			if ru.Email == "" {
+				continue
+			}
+			if ru.Type != "" && ru.Type != "USER_TYPE_MANAGED" {
+				continue
+			}
+			if co.RecentUserDomain != "" &&
+				!strings.HasSuffix(strings.ToLower(ru.Email), "@"+strings.ToLower(co.RecentUserDomain)) {
+				continue
+			}
+			candidate = ru.Email
+			break
+		}
+	}
+	if candidate == "" {
+		return 0, false
+	}
+	return e.lookupUser(candidate)
+}
+
+func (e *Engine) lookupUser(email string) (int, bool) {
+	key := strings.ToLower(strings.TrimSpace(email))
+	if id, ok := e.userIndex[key]; ok {
+		return id, true
+	}
+	if i := strings.IndexByte(key, '@'); i > 0 {
+		if id, ok := e.userIndex[key[:i]]; ok {
+			return id, true
+		}
+	}
+	return 0, false
+}
