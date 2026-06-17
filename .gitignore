@@ -1,0 +1,30 @@
+# Compiled binary
+/google2snipe
+google2snipe
+
+# Local config & secrets (keep settings.example.yaml)
+settings.yaml
+settings.local.yaml
+*.sa.json
+service-account*.json
+credentials*.json
+*.pem
+
+# Local API response cache
+.cache/
+
+# Logs
+*.log
+
+# Go build/test artifacts
+*.test
+*.out
+coverage.*
+/dist/
+/bin/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*~
