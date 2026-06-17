@@ -290,6 +290,11 @@ func (e *Engine) SyncDevice(dev google.Device) {
 }
 
 func (e *Engine) create(dev google.Device, l *logrus.Entry) {
+	if e.cfg.Sync.DryRun {
+		l.WithField("model", dev.Model).Info("[DRY RUN] would create asset")
+		e.stats.Created++
+		return
+	}
 	modelID, err := e.ensureModel(dev)
 	if err != nil {
 		l.WithError(err).Error("ensure model failed")
@@ -305,11 +310,6 @@ func (e *Engine) create(dev google.Device, l *logrus.Entry) {
 	}
 	if e.cfg.Sync.SetName {
 		asset.Name = e.renderName(dev)
-	}
-	if e.cfg.Sync.DryRun {
-		l.Info("[DRY RUN] would create asset")
-		e.stats.Created++
-		return
 	}
 	created, err := e.snipe.CreateAsset(asset)
 	if err != nil {
@@ -329,6 +329,11 @@ func (e *Engine) update(dev google.Device, existing snipe.Asset, l *logrus.Entry
 		e.stats.Skipped++
 		return
 	}
+	if e.cfg.Sync.DryRun {
+		l.WithField("snipe_id", existing.ID).Info("[DRY RUN] would update asset")
+		e.stats.Updated++
+		return
+	}
 	modelID, err := e.ensureModel(dev)
 	if err != nil {
 		l.WithError(err).Error("ensure model failed")
@@ -342,11 +347,6 @@ func (e *Engine) update(dev google.Device, existing snipe.Asset, l *logrus.Entry
 	}
 	if e.cfg.Sync.SetName {
 		patch.Name = e.renderName(dev)
-	}
-	if e.cfg.Sync.DryRun {
-		l.WithField("snipe_id", existing.ID).Info("[DRY RUN] would update asset")
-		e.stats.Updated++
-		return
 	}
 	if _, err := e.snipe.PatchAsset(existing.ID, patch); err != nil {
 		l.WithError(err).Error("update asset failed")

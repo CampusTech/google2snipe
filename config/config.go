@@ -17,12 +17,13 @@ type Config struct {
 }
 
 type GoogleConfig struct {
-	CredentialsFile    string `yaml:"credentials_file"`
-	ImpersonateSubject string `yaml:"impersonate_subject"`
-	CustomerID         string `yaml:"customer_id"`
-	Projection         string `yaml:"projection"`
-	OrgUnitPath        string `yaml:"org_unit_path"`
-	Query              string `yaml:"query"`
+	CredentialsFile    string   `yaml:"credentials_file"`
+	ImpersonateSubject string   `yaml:"impersonate_subject"`
+	CustomerID         string   `yaml:"customer_id"`
+	Projection         string   `yaml:"projection"`
+	OrgUnitPath        string   `yaml:"org_unit_path"`
+	Query              string   `yaml:"query"`
+	Scopes             []string `yaml:"scopes"`
 }
 
 type SnipeITConfig struct {
@@ -146,6 +147,9 @@ func (c *Config) applyDefaults() {
 		c.Google.Projection = "full"
 	}
 	c.Google.Projection = strings.ToLower(c.Google.Projection)
+	if len(c.Google.Scopes) == 0 {
+		c.Google.Scopes = []string{"https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly"}
+	}
 	if c.Sync.CacheDir == "" {
 		c.Sync.CacheDir = ".cache"
 	}

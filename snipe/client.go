@@ -162,18 +162,50 @@ func (c *Client) GetAssetBySerial(serial string) ([]Asset, error) {
 
 // CreateAsset creates a hardware asset and returns it with its assigned ID and
 // asset tag.
+// CreateAsset creates an asset. On custom-field validation errors (Snipe
+// rejecting a field as "not available on this Asset Model's fieldset", or as
+// invalid), it strips the rejected fields and retries the create once so the
+// asset still lands with the fields that do fit.
 func (c *Client) CreateAsset(a Asset) (Asset, error) {
 	if c.dryRun {
 		return Asset{}, ErrDryRun
 	}
-	resp, _, err := c.sc.Assets.CreateContext(context.Background(), toSnipeAsset(a))
+	sa := toSnipeAsset(a)
+	resp, _, err := c.sc.Assets.CreateContext(context.Background(), sa)
 	if err != nil {
 		return Asset{}, fmt.Errorf("creating asset: %w", err)
 	}
-	if resp.Status != "success" {
-		return Asset{}, fmt.Errorf("creating asset failed: %s", resp.Message.String())
+	if resp.Status == "success" {
+		return fromSnipeAsset(resp.Payload), nil
 	}
-	return fromSnipeAsset(resp.Payload), nil
+
+	rejected, reason := invalidFieldErrors(resp.Message.String())
+	if len(rejected) > 0 && sa.CustomFields != nil {
+		c.logger.WithFields(logrus.Fields{
+			"serial":      a.Serial,
+			"model_id":    sa.Model.ID,
+			"fieldset_id": sa.Model.FieldsetID,
+			"fields":      rejected,
+			"reason":      reason,
+		}).Warn("Snipe-IT rejected custom fields — retrying without them. Run 'google2snipe setup' to fix the fieldset.")
+		cleaned := make(map[string]string, len(sa.CustomFields))
+		for k, v := range sa.CustomFields {
+			cleaned[k] = v
+		}
+		for _, k := range rejected {
+			delete(cleaned, k)
+		}
+		sa.CustomFields = cleaned
+		resp, _, err = c.sc.Assets.CreateContext(context.Background(), sa)
+		if err != nil {
+			return Asset{}, fmt.Errorf("creating asset (retry): %w", err)
+		}
+		if resp.Status != "success" {
+			return Asset{}, fmt.Errorf("creating asset failed: %s", resp.Message.String())
+		}
+		return fromSnipeAsset(resp.Payload), nil
+	}
+	return Asset{}, fmt.Errorf("creating asset failed: %s", resp.Message.String())
 }
 
 // PatchAsset partially updates an asset. On custom-field validation errors

@@ -34,7 +34,11 @@ func New(cfg cfgpkg.GoogleConfig, logger *logrus.Logger) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read credentials_file: %w", err)
 	}
-	jwtCfg, err := google.JWTConfigFromJSON(keyData, admin.AdminDirectoryDeviceChromeosReadonlyScope)
+	scopes := cfg.Scopes
+	if len(scopes) == 0 {
+		scopes = []string{admin.AdminDirectoryDeviceChromeosReadonlyScope}
+	}
+	jwtCfg, err := google.JWTConfigFromJSON(keyData, scopes...)
 	if err != nil {
 		return nil, fmt.Errorf("parse service account key: %w", err)
 	}
