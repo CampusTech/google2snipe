@@ -6,7 +6,7 @@
 
 **Architecture:** Cobra command tree (`sync`, `setup`, `test`) over four packages: `config/` (YAML + validation), `google/` (official `admin/directory/v1` SDK wrapper that lists/gets ChromeOS devices and retains raw JSON for gjson), `snipe/` (go-snipeit wrapper, ported from fleet2snipe), and `sync/` (the reconciliation engine — field mapping, transforms, status mapping, checkout). The engine matches assets by serial, upserts them, maps device fields into Snipe custom fields via gjson paths + transforms, maps ChromeOS lifecycle status to Snipe status labels, and optionally checks out to the assigned/recent user.
 
-**Tech Stack:** Go 1.24, `google.golang.org/api/admin/directory/v1`, `golang.org/x/oauth2/google`, `google.golang.org/api/option`, `github.com/michellepellon/go-snipeit`, `github.com/spf13/cobra`, `github.com/sirupsen/logrus`, `github.com/tidwall/gjson`, `gopkg.in/yaml.v3`.
+**Tech Stack:** Go 1.26.4, `google.golang.org/api/admin/directory/v1`, `golang.org/x/oauth2/google`, `google.golang.org/api/option`, `github.com/michellepellon/go-snipeit`, `github.com/spf13/cobra`, `github.com/sirupsen/logrus`, `github.com/tidwall/gjson`, `gopkg.in/yaml.v3`.
 
 **Reference implementation:** fleet2snipe lives at `/Users/robbiet480/go/src/github.com/CampusTech/fleet2snipe`. Referred to below as `$FLEET`. Read its files when a task says "port from $FLEET" — the `snipe/` package and config YAML-merge logic are data-source-agnostic and should be copied with the minimal adaptations shown.
 
@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - **Module path:** `github.com/CampusTech/google2snipe`
-- **Go version:** 1.24+ (`go 1.24` in go.mod)
+- **Go version:** 1.26.4 (`go 1.26.4` in go.mod)
 - **Scope:** ChromeOS devices ONLY. No other Google device types.
 - **Projection:** default `full` (required for `recentUsers` + report arrays); `basic` is an opt-down.
 - **Customer ID:** default `my_customer`.
@@ -154,7 +154,7 @@ go mod init github.com/CampusTech/google2snipe
 go get github.com/spf13/cobra@latest
 go get github.com/sirupsen/logrus@latest
 ```
-Expected: `go.mod` created with module path and `go 1.24` (edit the `go` line to `1.24` if a newer toolchain wrote something else), cobra + logrus added.
+Expected: `go.mod` created with module path. Edit the `go` line to `go 1.26.4` (and remove any `toolchain` line `go mod init` may have added, or set it to `toolchain go1.26.4`). Then `cobra` + `logrus` added.
 
 - [ ] **Step 2: Write `main.go`**
 
@@ -2824,7 +2824,7 @@ MIT
 - [ ] **Step 3: Write `Dockerfile`**
 
 ```dockerfile
-FROM golang:1.24-alpine AS build
+FROM golang:1.26.4-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
