@@ -257,10 +257,28 @@ Idempotently create a standard ChromeOS field set in Snipe-IT and merge
 
 Note: `autoUpdateThrough` replaces the **deprecated** `autoUpdateExpiration`.
 `diskSpaceUsage` is preferred over the per-volume `diskVolumeReports[]`.
-Date/timestamp fields are stored as text (ANY) like fleet2snipe's timestamp
-fields; an optional date-normalize transform + Snipe DATE format can be layered
-later. `recentUsers.#.email` yields a JSON array; `stringifyGJSON` joins it to a
+`recentUsers.#.email` yields a JSON array; `stringifyGJSON` joins it to a
 comma-separated list (no transform needed).
+
+**Field format on creation.** `setup` sets each Snipe-IT custom field's
+`format` (and `element`) at creation time, per the "Snipe format" column — the
+`FieldDef` struct carries `Name`, `Element` (default `text`), `Format`, and
+optional `Values`. This matters because Snipe **enforces** format validation on
+every written value, and the engine's strip-and-retry only recovers from
+fieldset-association errors, not value-format rejections. Format choices are
+therefore correct-but-lenient:
+
+- IP fields (`lastKnownNetwork.0.ipAddress`, `.wanIpAddress`) use **IP** (Laravel
+  `ip`), which accepts both IPv4 and IPv6 — not `IPV4` — so v6 devices aren't
+  rejected. Empty network info → gjson `""` → field skipped (never written).
+- MAC fields use **MAC** and require the `mac_colons` transform, because Google
+  returns separator-less MACs (`a4bb6d123456`) that fail Snipe's `mac_address`
+  rule until regrouped to `a4:bb:6d:12:34:56`.
+- Size fields use **NUMERIC** (Laravel `numeric` accepts the decimal GB output).
+- Date/timestamp fields are **ANY** (text) on purpose: ChromeOS emits RFC3339
+  (`2024-05-01T12:00:00.000Z`), which Snipe's `DATE` format (`YYYY-MM-DD`) would
+  reject. An optional date-normalize transform + DATE format can be layered later
+  for pure-date fields (`manufactureDate`, `autoUpdateThrough`).
 
 **Optional / opt-in (documented in `settings.example.yaml`, NOT created by default):**
 
