@@ -217,28 +217,71 @@ Idempotently create a standard ChromeOS field set in Snipe-IT and merge
 `db_column_name`s back into `settings.yaml` (same machinery as fleet2snipe's
 `MergeFieldMapping`). Default fields and their mappings:
 
-| Field name | Path | Transform |
-|---|---|---|
-| Chrome: Serial | `serialNumber` | |
-| Chrome: Device ID | `deviceId` | |
-| Chrome: Model | `model` | |
-| Chrome: OS Version | `osVersion` | |
-| Chrome: Platform Version | `platformVersion` | |
-| Chrome: Firmware Version | `firmwareVersion` | |
-| Chrome: Status | `status` | |
-| Chrome: Org Unit Path | `orgUnitPath` | |
-| Chrome: Annotated User | `annotatedUser` | |
-| Chrome: Annotated Asset ID | `annotatedAssetId` | |
-| Chrome: Annotated Location | `annotatedLocation` | |
-| Chrome: Boot Mode | `bootMode` | |
-| Chrome: MAC | `macAddress` | `mac_colons` |
-| Chrome: Ethernet MAC | `ethernetMacAddress` | `mac_colons` |
-| Chrome: Last Sync | `lastSync` | |
-| Chrome: Last Enrollment | `lastEnrollmentTime` | |
-| Chrome: Auto-Update Expiration | `autoUpdateExpiration` | |
-| Chrome: Support End Date | `supportEndDate` | |
-| Chrome: Notes | `notes` | |
-| Chrome: Recent Users | `recentUsers.#.email` | (joined) |
+**Core set (created by default):**
+
+| Field name | Path | Transform | Snipe format |
+|---|---|---|---|
+| Chrome: Serial | `serialNumber` | | text |
+| Chrome: Device ID | `deviceId` | | text |
+| Chrome: Model | `model` | | text |
+| Chrome: OS Type | `chromeOsType` | | text |
+| Chrome: OS Version | `osVersion` | | text |
+| Chrome: Platform Version | `platformVersion` | | text |
+| Chrome: Firmware Version | `firmwareVersion` | | text |
+| Chrome: OS Compliance | `osVersionCompliance` | | text |
+| Chrome: OS Update State | `osUpdateStatus.state` | | text |
+| Chrome: Status | `status` | | text |
+| Chrome: Org Unit Path | `orgUnitPath` | | text |
+| Chrome: Annotated User | `annotatedUser` | | text |
+| Chrome: Annotated Asset ID | `annotatedAssetId` | | text |
+| Chrome: Annotated Location | `annotatedLocation` | | text |
+| Chrome: Boot Mode | `bootMode` | | text |
+| Chrome: MAC | `macAddress` | `mac_colons` | MAC |
+| Chrome: Ethernet MAC | `ethernetMacAddress` | `mac_colons` | MAC |
+| Chrome: Last Known IP | `lastKnownNetwork.0.ipAddress` | | IP |
+| Chrome: CPU Model | `cpuInfo.0.model` | | text |
+| Chrome: System RAM (GB) | `systemRamTotal` | `bytes_to_gb` | numeric |
+| Chrome: Disk Capacity (GB) | `diskSpaceUsage.capacityBytes` | `bytes_to_gb` | numeric |
+| Chrome: Disk Used (GB) | `diskSpaceUsage.usedBytes` | `bytes_to_gb` | numeric |
+| Chrome: License Type | `deviceLicenseType` | | text |
+| Chrome: Manufacture Date | `manufactureDate` | | text |
+| Chrome: Order Number | `orderNumber` | | text |
+| Chrome: Auto-Update Through | `autoUpdateThrough` | | text |
+| Chrome: Support End Date | `supportEndDate` | | text |
+| Chrome: First Enrollment | `firstEnrollmentTime` | | text |
+| Chrome: Last Enrollment | `lastEnrollmentTime` | | text |
+| Chrome: Last Sync | `lastSync` | | text |
+| Chrome: TPM Spec Level | `tpmVersionInfo.specLevel` | | text |
+| Chrome: Notes | `notes` | | text |
+| Chrome: Recent Users | `recentUsers.#.email` | | text |
+
+Note: `autoUpdateThrough` replaces the **deprecated** `autoUpdateExpiration`.
+`diskSpaceUsage` is preferred over the per-volume `diskVolumeReports[]`.
+Date/timestamp fields are stored as text (ANY) like fleet2snipe's timestamp
+fields; an optional date-normalize transform + Snipe DATE format can be layered
+later. `recentUsers.#.email` yields a JSON array; `stringifyGJSON` joins it to a
+comma-separated list (no transform needed).
+
+**Optional / opt-in (documented in `settings.example.yaml`, NOT created by default):**
+
+| Field name | Path | Transform | Note |
+|---|---|---|---|
+| Chrome: MEID | `meid` | | cellular/LTE models only |
+| Chrome: WAN IP | `lastKnownNetwork.0.wanIpAddress` | | |
+| Chrome: Dock MAC | `dockMacAddress` | `mac_colons` | |
+| Chrome: Ethernet MAC 2 | `ethernetMacAddress0` | `mac_colons` | |
+| Chrome: CPU Architecture | `cpuInfo.0.architecture` | | |
+| Chrome: TPM Family | `tpmVersionInfo.family` | | |
+| Chrome: Will Auto-Renew | `willAutoRenew` | `bool_yes_no` | license auto-renew |
+| Chrome: Extended Support Eligible | `extendedSupportEligible` | `bool_yes_no` | AUE extended support |
+| Chrome: Last Deprovision | `lastDeprovisionTimestamp` | | |
+| Chrome: Deprovision Reason | `deprovisionReason` | | only when DEPROVISIONED |
+
+**Deliberately skipped (transient telemetry / metadata — still mappable via
+`field_mapping`):** `activeTimeRanges`, `cpuStatusReports`,
+`systemRamFreeReports`, `diskVolumeReports` (superseded by `diskSpaceUsage`),
+`deviceFiles`, `screenshotFiles`, `backlightInfo`, `fanInfo`,
+`bluetoothAdapterInfo`, `kind`, `etag`, `orgUnitId`.
 
 Manual prerequisites (Snipe-IT): ≥1 fieldset, ≥1 status label
 (`default_status_id`), ≥1 category (`default_category_id`). Manufacturers
