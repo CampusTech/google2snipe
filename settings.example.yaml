@@ -1,0 +1,67 @@
+# google2snipe — sync ChromeOS devices from the Google Admin SDK into Snipe-IT.
+# Copy to settings.yaml and fill in. Secrets can also come from env:
+#   SNIPE_URL, SNIPE_API_KEY, GOOGLE_APPLICATION_CREDENTIALS,
+#   GOOGLE_IMPERSONATE_SUBJECT, GOOGLE_CUSTOMER_ID
+
+google:
+  # Service-account JSON key with domain-wide delegation. Grant the SA the
+  # scope https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly
+  # in Admin Console > Security > API controls > Domain-wide delegation.
+  credentials_file: /path/to/service-account.json
+  # An admin user to impersonate (DWD). Required.
+  impersonate_subject: admin@campusgroup.co
+  customer_id: my_customer      # default; resolves to your account's customer
+  projection: full              # full (default) | basic. FULL is needed for
+                                # recentUsers (checkout fallback) + report fields.
+  org_unit_path: ""             # optional: only sync this OU subtree
+  query: ""                     # optional: Directory API search query
+
+snipe_it:
+  url: https://snipe.campusgroup.co
+  api_key: REPLACE_ME
+  default_status_id: 2          # status for new/unmapped assets (REQUIRED)
+  default_category_id: 5        # ChromeOS category (REQUIRED)
+  default_manufacturer_id: 0    # fallback when vendor can't be derived from model
+  custom_fieldset_id: 3         # fieldset for ChromeOS models (REQUIRED for setup)
+  # Map ChromeOS lifecycle status -> Snipe status label IDs.
+  status_map:
+    ACTIVE: 2
+    DEPROVISIONED: 4
+    DISABLED: 4
+  # Map model-vendor (lowercased first token of `model`) -> manufacturer ID.
+  manufacturer_ids:
+    lenovo: 10
+    acer: 11
+    hp: 12
+    dell: 13
+    asus: 14
+    google: 15
+
+sync:
+  dry_run: false
+  rate_limit: true              # token-bucket limit on Snipe-IT writes
+  update_only: false
+  set_name: false
+  name_template: "{annotatedAssetId}"
+  cache_dir: .cache
+  asset_tag:
+    template: "{annotatedAssetId}"   # empty render -> Snipe auto-assigns
+  # field_mapping is populated by `google2snipe setup`. Example shape:
+  #   _snipeit_chrome_serial_1: serialNumber
+  #   _snipeit_chrome_ram_2: {path: systemRamTotal, transform: bytes_to_gb}
+  field_mapping: {}
+  checkout:
+    enabled: false
+    use_annotated_user: true
+    fallback_to_recent: true
+    recent_user_domain: campusgroup.co  # only count recent users at this domain
+    match_field: email          # email | username | employee_num
+    mode: assign                # assign | sync | force
+
+# --- Optional / opt-in fields (not created by `setup`; add to field_mapping
+#     manually if you want them) ---
+#   _snipeit_chrome_meid_X: meid                       # cellular models only
+#   _snipeit_chrome_wan_ip_X: lastKnownNetwork.0.wanIpAddress
+#   _snipeit_chrome_dock_mac_X: {path: dockMacAddress, transform: mac_colons}
+#   _snipeit_chrome_will_renew_X: {path: willAutoRenew, transform: bool_yes_no}
+#   _snipeit_chrome_deprovision_reason_X: deprovisionReason
