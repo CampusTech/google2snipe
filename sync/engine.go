@@ -3,6 +3,7 @@ package sync
 import (
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
@@ -235,4 +236,184 @@ func (e *Engine) lookupUser(email string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// SyncAll reconciles every device and returns run statistics.
+func (e *Engine) SyncAll(devs []google.Device) Stats {
+	for i, d := range devs {
+		e.SyncDevice(d)
+		if (i+1)%50 == 0 {
+			e.log.WithField("processed", i+1).Info("syncing")
+		}
+	}
+	e.log.WithFields(logrus.Fields{
+		"total": e.stats.Total, "created": e.stats.Created, "updated": e.stats.Updated,
+		"skipped": e.stats.Skipped, "errors": e.stats.Errors,
+	}).Info("sync complete")
+	return e.stats
+}
+
+// StatsSnapshot returns a copy of the current counters.
+func (e *Engine) StatsSnapshot() Stats { return e.stats }
+
+// SyncDevice reconciles a single device into Snipe-IT.
+func (e *Engine) SyncDevice(dev google.Device) {
+	e.stats.Total++
+	serial := strings.TrimSpace(dev.SerialNumber)
+	if serial == "" {
+		e.log.WithField("device_id", dev.DeviceId).Debug("skipping device with empty serial")
+		e.stats.Skipped++
+		return
+	}
+	l := e.log.WithField("serial", serial)
+
+	existing, err := e.snipe.GetAssetBySerial(serial)
+	if err != nil {
+		l.WithError(err).Error("snipe lookup failed")
+		e.stats.Errors++
+		return
+	}
+	switch len(existing) {
+	case 0:
+		if e.cfg.Sync.UpdateOnly {
+			l.Debug("update-only: skipping create")
+			e.stats.Skipped++
+			return
+		}
+		e.create(dev, l)
+	case 1:
+		e.update(dev, existing[0], l)
+	default:
+		l.WithField("matches", len(existing)).Warn("multiple assets share this serial; skipping")
+		e.stats.Skipped++
+	}
+}
+
+func (e *Engine) create(dev google.Device, l *logrus.Entry) {
+	modelID, err := e.ensureModel(dev)
+	if err != nil {
+		l.WithError(err).Error("ensure model failed")
+		e.stats.Errors++
+		return
+	}
+	asset := snipe.Asset{
+		Serial:       dev.SerialNumber,
+		AssetTag:     e.assetTag(dev),
+		ModelID:      modelID,
+		StatusID:     e.statusID(dev),
+		CustomFields: e.applyMapping(dev),
+	}
+	if e.cfg.Sync.SetName {
+		asset.Name = e.renderName(dev)
+	}
+	if e.cfg.Sync.DryRun {
+		l.Info("[DRY RUN] would create asset")
+		e.stats.Created++
+		return
+	}
+	created, err := e.snipe.CreateAsset(asset)
+	if err != nil {
+		l.WithError(err).Error("create asset failed")
+		e.stats.Errors++
+		return
+	}
+	l.WithField("snipe_id", created.ID).Info("created asset")
+	e.applyCheckout(dev, created, l)
+	e.stats.Created++
+}
+
+func (e *Engine) update(dev google.Device, existing snipe.Asset, l *logrus.Entry) {
+	if !e.cfg.Sync.Force && deviceOlderThan(dev, existing.UpdatedAt) {
+		l.Debug("snipe record newer than device; skipping field update")
+		e.applyCheckout(dev, existing, l)
+		e.stats.Skipped++
+		return
+	}
+	modelID, err := e.ensureModel(dev)
+	if err != nil {
+		l.WithError(err).Error("ensure model failed")
+		e.stats.Errors++
+		return
+	}
+	patch := snipe.Asset{
+		ModelID:      modelID,
+		StatusID:     e.statusID(dev),
+		CustomFields: e.applyMapping(dev),
+	}
+	if e.cfg.Sync.SetName {
+		patch.Name = e.renderName(dev)
+	}
+	if e.cfg.Sync.DryRun {
+		l.WithField("snipe_id", existing.ID).Info("[DRY RUN] would update asset")
+		e.stats.Updated++
+		return
+	}
+	if _, err := e.snipe.PatchAsset(existing.ID, patch); err != nil {
+		l.WithError(err).Error("update asset failed")
+		e.stats.Errors++
+		return
+	}
+	l.WithField("snipe_id", existing.ID).Info("updated asset")
+	e.applyCheckout(dev, existing, l)
+	e.stats.Updated++
+}
+
+func (e *Engine) applyCheckout(dev google.Device, asset snipe.Asset, l *logrus.Entry) {
+	userID, ok := e.resolveCheckoutUser(dev)
+	if !ok {
+		return
+	}
+	switch e.cfg.Sync.Checkout.Mode {
+	case "assign":
+		if asset.AssignedToID != 0 {
+			return // already assigned; don't override
+		}
+	case "sync", "force":
+		if asset.AssignedToID == userID {
+			return // already correct
+		}
+	}
+	if e.cfg.Sync.DryRun {
+		l.WithField("user_id", userID).Info("[DRY RUN] would check out asset")
+		return
+	}
+	if err := e.snipe.CheckoutAssetToUser(asset.ID, userID); err != nil {
+		l.WithError(err).Warn("checkout failed")
+		return
+	}
+	l.WithField("user_id", userID).Info("checked out asset")
+}
+
+func (e *Engine) renderName(dev google.Device) string {
+	tmpl := e.cfg.Sync.NameTemplate
+	if tmpl == "" {
+		tmpl = "{annotatedAssetId}"
+	}
+	out := tagPlaceholder.ReplaceAllStringFunc(tmpl, func(m string) string {
+		return gjson.GetBytes(dev.Raw, m[1:len(m)-1]).String()
+	})
+	out = strings.TrimSpace(out)
+	if out == "" {
+		out = dev.SerialNumber
+	}
+	return out
+}
+
+// deviceOlderThan reports whether the device's last sync/enrollment predates t.
+func deviceOlderThan(dev google.Device, t time.Time) bool {
+	if t.IsZero() {
+		return false
+	}
+	ts := dev.LastSync
+	if ts == "" {
+		ts = dev.LastEnrollmentTime
+	}
+	if ts == "" {
+		return false
+	}
+	parsed, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return false
+	}
+	return parsed.Before(t)
 }

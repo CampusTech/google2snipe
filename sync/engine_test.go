@@ -135,3 +135,80 @@ func TestEnsureManufacturerFromModel(t *testing.T) {
 		t.Errorf("created manufacturer = %+v, want name Lenovo", stub.manufs)
 	}
 }
+
+func baseCfg() *config.Config {
+	cfg := &config.Config{}
+	cfg.SnipeIT.DefaultStatusID = 1
+	cfg.SnipeIT.DefaultCategoryID = 2
+	cfg.Sync.AssetTag.Template = "{annotatedAssetId}"
+	cfg.Sync.FieldMapping = map[string]config.FieldMappingEntry{
+		"_snipeit_chrome_status_1": {Path: "status"},
+	}
+	return cfg
+}
+
+func TestSyncDeviceCreatesWhenAbsent(t *testing.T) {
+	stub := &stubSnipe{bySerial: map[string][]snipe.Asset{}}
+	e := New(baseCfg(), stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+		SerialNumber: "S1", Status: "ACTIVE", Model: "Acer Chromebook 311", AnnotatedAssetId: "CG-1",
+	}))
+	if len(stub.created) != 1 {
+		t.Fatalf("created %d assets, want 1", len(stub.created))
+	}
+	a := stub.created[0]
+	if a.Serial != "S1" || a.AssetTag != "CG-1" || a.StatusID != 1 {
+		t.Errorf("created asset = %+v", a)
+	}
+	if a.CustomFields["_snipeit_chrome_status_1"] != "ACTIVE" {
+		t.Errorf("custom field not mapped: %+v", a.CustomFields)
+	}
+}
+
+func TestSyncDeviceUpdatesWhenPresent(t *testing.T) {
+	stub := &stubSnipe{bySerial: map[string][]snipe.Asset{
+		"S1": {{ID: 7, Serial: "S1", StatusID: 1, CustomFields: map[string]string{}}},
+	}}
+	cfg := baseCfg()
+	cfg.Sync.Force = true // skip freshness gate
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{SerialNumber: "S1", Status: "DISABLED", Model: "Acer Chromebook 311"}))
+	if len(stub.created) != 0 {
+		t.Fatalf("should not create, created=%d", len(stub.created))
+	}
+	a, ok := stub.patched[7]
+	if !ok {
+		t.Fatal("expected PatchAsset(7, ...)")
+	}
+	if a.CustomFields["_snipeit_chrome_status_1"] != "DISABLED" {
+		t.Errorf("patch custom fields = %+v", a.CustomFields)
+	}
+}
+
+func TestSyncDeviceUpdateOnlySkipsCreate(t *testing.T) {
+	stub := &stubSnipe{bySerial: map[string][]snipe.Asset{}}
+	cfg := baseCfg()
+	cfg.Sync.UpdateOnly = true
+	e := New(cfg, stub, logrus.New())
+	_ = e.Warm()
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{SerialNumber: "S9", Status: "ACTIVE"}))
+	if len(stub.created) != 0 {
+		t.Errorf("update_only must not create, created=%d", len(stub.created))
+	}
+}
+
+func TestSyncDeviceSkipsEmptySerial(t *testing.T) {
+	stub := &stubSnipe{bySerial: map[string][]snipe.Asset{}}
+	e := New(baseCfg(), stub, logrus.New())
+	_ = e.Warm()
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{SerialNumber: ""}))
+	if len(stub.created) != 0 || e.stats.Total != 1 || e.stats.Skipped != 1 {
+		t.Errorf("empty serial should be skipped: created=%d stats=%+v", len(stub.created), e.stats)
+	}
+}
