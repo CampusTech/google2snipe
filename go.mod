@@ -3,6 +3,7 @@ module github.com/CampusTech/google2snipe
 go 1.26.4
 
 require (
+	github.com/michellepellon/go-snipeit v0.0.0-20260308041334-b4baa85a4d8c
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
 	github.com/tidwall/gjson v1.19.0
@@ -19,6 +20,7 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
