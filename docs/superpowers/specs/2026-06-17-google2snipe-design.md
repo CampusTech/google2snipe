@@ -82,8 +82,12 @@ differ); `sync/engine.go` ~90% reusable (swap data source + ChromeOS specifics);
   Cloud Run/GKE) when no key file is provided; still requires DWD + subject.
 - **Customer ID:** `google.customer_id`, default `my_customer`.
 - **List:** `Chromeosdevices.List(customerId)` paginated via `PageToken`.
-  - `projection`: `BASIC` (default) or `FULL` (pulls reports/recentUsers; heavier).
-    Config `google.projection` + `sync --projection` override.
+  - `projection`: `FULL` (**default**) or `BASIC`. FULL pulls the report arrays
+    and — critically — `recentUsers`, which the checkout fallback depends on.
+    FULL costs no extra API quota (quota is per-request), only larger payloads
+    and a larger `.cache/devices.json`. `BASIC` is retained as an opt-down perf
+    escape hatch for large fleets mapping only BASIC fields. Config
+    `google.projection` + `sync --projection` override.
   - Optional filters: `google.org_unit_path` and `google.query` (mirror
     fleet2snipe's team/platform filters).
 - **Get single:** `Chromeosdevices.Get(customerId, deviceId)`.
@@ -151,6 +155,10 @@ Resolution: try `annotatedUser`; if empty and `fallback_to_recent`, pick the fir
 match fleet2snipe (`assign` = check out if currently unassigned; `sync` = keep in
 sync; `force` = always enforce).
 
+Note: `recentUsers` is only returned under `projection=full` (the default), so the
+recent-user fallback requires FULL. If `projection: basic` is set, only the
+`annotatedUser` source is available.
+
 ## Field-mapping engine (ported)
 
 Keep the gjson `field_mapping` source (path + optional transform) against the
@@ -188,8 +196,9 @@ gjson supports every field shape in the resource:
   `activeTimeRanges`, `cpuStatusReports`, `cpuInfo`, `diskVolumeReports`,
   `systemRamFreeReports`, `deviceFiles`, `screenshotFiles`, `lastKnownNetwork`,
   `backlightInfo`, `fanInfo`, `bluetoothAdapterInfo`, `diskSpaceUsage`,
-  `tpmVersionInfo`) are only populated with `projection=full`. Config validation
-  warns if a mapped path targets a FULL-only field while `projection: basic`.
+  `tpmVersionInfo`) are only populated with `projection=full` (the default).
+  Config validation warns if a mapped path targets a FULL-only field while
+  `projection: basic` is explicitly set.
 - **int64-as-string:** Google encodes int64 fields as JSON strings
   (`systemRamTotal`, `diskSpaceUsage.capacityBytes`,
   `diskVolumeReports.*.volumeInfo.*.storageTotal/storageFree`). gjson reads
@@ -252,7 +261,7 @@ google:
   credentials_file: /path/to/sa.json   # or GOOGLE_APPLICATION_CREDENTIALS / ADC
   impersonate_subject: admin@campusgroup.co
   customer_id: my_customer
-  projection: basic                     # basic | full
+  projection: full                      # full (default) | basic
   org_unit_path: ""                     # optional filter
   query: ""                             # optional Directory API query
 
