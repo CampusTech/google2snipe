@@ -9,7 +9,7 @@ google:
   # in Admin Console > Security > API controls > Domain-wide delegation.
   credentials_file: /path/to/service-account.json
   # An admin user to impersonate (DWD). Required.
-  impersonate_subject: admin@campusgroup.co
+  impersonate_subject: admin@example.com
   customer_id: my_customer      # default; resolves to your account's customer
   projection: full              # full (default) | basic. FULL is needed for
                                 # recentUsers (checkout fallback) + report fields.
@@ -17,7 +17,7 @@ google:
   query: ""                     # optional: Directory API search query
 
 snipe_it:
-  url: https://snipe.campusgroup.co
+  url: https://snipe.example.com
   api_key: REPLACE_ME
   default_status_id: 2          # status for new/unmapped assets (REQUIRED)
   default_category_id: 5        # ChromeOS category (REQUIRED)
@@ -54,7 +54,7 @@ sync:
     enabled: false
     use_annotated_user: true
     fallback_to_recent: true
-    recent_user_domain: campusgroup.co  # only count recent users at this domain
+    recent_user_domain: example.com  # only count recent users at this domain
     match_field: email          # email | username | employee_num
     mode: assign                # assign | sync | force
 
