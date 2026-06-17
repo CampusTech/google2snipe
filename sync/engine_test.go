@@ -2,6 +2,7 @@ package sync
 
 import (
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	admin "google.golang.org/api/admin/directory/v1"
@@ -210,5 +211,60 @@ func TestSyncDeviceSkipsEmptySerial(t *testing.T) {
 	e.SyncDevice(dev(t, &admin.ChromeOsDevice{SerialNumber: ""}))
 	if len(stub.created) != 0 || e.stats.Total != 1 || e.stats.Skipped != 1 {
 		t.Errorf("empty serial should be skipped: created=%d stats=%+v", len(stub.created), e.stats)
+	}
+}
+
+func TestSyncDeviceFreshnessSkip(t *testing.T) {
+	stub := &stubSnipe{bySerial: map[string][]snipe.Asset{
+		"S1": {{
+			ID:           7,
+			Serial:       "S1",
+			StatusID:     1,
+			CustomFields: map[string]string{},
+			UpdatedAt:    time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		}},
+	}}
+	cfg := baseCfg() // Force defaults false
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+	// LastSync 2024-01-01 is older than asset UpdatedAt 2025-01-01 → freshness skip
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+		SerialNumber: "S1",
+		Status:       "ACTIVE",
+		Model:        "Acer Chromebook 311",
+		LastSync:     "2024-01-01T00:00:00Z",
+	}))
+	if len(stub.patched) != 0 {
+		t.Errorf("expected no PatchAsset call, got patched=%v", stub.patched)
+	}
+	if e.stats.Skipped != 1 {
+		t.Errorf("Skipped = %d, want 1", e.stats.Skipped)
+	}
+	if e.stats.Updated != 0 {
+		t.Errorf("Updated = %d, want 0", e.stats.Updated)
+	}
+}
+
+func TestSyncDeviceDryRunNoMutators(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Sync.DryRun = true
+	stub := &stubSnipe{bySerial: map[string][]snipe.Asset{}}
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+		SerialNumber:     "S2",
+		Status:           "ACTIVE",
+		Model:            "Acer Chromebook 311",
+		AnnotatedAssetId: "CG-2",
+	}))
+	if e.stats.Created != 1 {
+		t.Errorf("Created = %d, want 1", e.stats.Created)
+	}
+	if len(stub.created) != 0 {
+		t.Errorf("dry-run must not call CreateAsset, got created=%v", stub.created)
 	}
 }
