@@ -30,6 +30,14 @@ func TestTransforms(t *testing.T) {
 		{"datetime from rfc3339 millis", `{"t":"2024-05-01T12:00:00.000Z"}`, "t", "datetime", "2024-05-01 12:00:00"},
 		{"date unparseable empty", `{"t":"not a date"}`, "t", "date_only", ""},
 		{"date missing empty", `{}`, "nope", "date_only", ""},
+		{"bad string bytes empty", `{"ram":"not-a-number"}`, "ram", "bytes_to_gb", ""},
+		{"mac dashes", `{"m":"a4bb6d123456"}`, "m", "mac_dashes", "a4-bb-6d-12-34-56"},
+		{"comma thousands", `{"n":1234567}`, "n", "comma_thousands", "1,234,567"},
+		{"comma thousands negative", `{"n":-1234}`, "n", "comma_thousands", "-1,234"},
+		{"unix to iso", `{"t":1609459200}`, "t", "unix_to_iso", "2021-01-01 00:00:00"},
+		{"unix to iso string", `{"t":"1609459200"}`, "t", "unix_to_iso", "2021-01-01 00:00:00"},
+		{"unix to iso zero empty", `{"t":0}`, "t", "unix_to_iso", ""},
+		{"lowercase", `{"s":"FLEX"}`, "s", "lowercase", "flex"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
