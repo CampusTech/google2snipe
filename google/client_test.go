@@ -51,3 +51,33 @@ func TestListAllChromeOSDevicesPaginates(t *testing.T) {
 		t.Error("Raw not populated")
 	}
 }
+
+func TestListAllChromeOSDevicesFilters(t *testing.T) {
+	wantOrgUnit := "/Engineering"
+	wantQuery := "os:Chrome"
+
+	var gotOrgUnit, gotQuery string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/admin/directory/v1/customer/my_customer/devices/chromeos", func(w http.ResponseWriter, r *http.Request) {
+		gotOrgUnit = r.URL.Query().Get("orgUnitPath")
+		gotQuery = r.URL.Query().Get("query")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"chromeosdevices":[]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL+"/")
+	c.orgUnit = wantOrgUnit
+	c.query = wantQuery
+
+	if _, err := c.ListAllChromeOSDevices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if gotOrgUnit != wantOrgUnit {
+		t.Errorf("orgUnitPath: got %q, want %q", gotOrgUnit, wantOrgUnit)
+	}
+	if gotQuery != wantQuery {
+		t.Errorf("query: got %q, want %q", gotQuery, wantQuery)
+	}
+}

@@ -77,14 +77,15 @@ func (c *Client) ListAllChromeOSDevices(ctx context.Context) ([]Device, error) {
 		if err != nil {
 			return nil, fmt.Errorf("list chromeos devices: %w", err)
 		}
+		pageCount := len(resp.Chromeosdevices)
 		for _, d := range resp.Chromeosdevices {
 			dev, err := wrapDevice(d)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("wrap device %s: %w", d.DeviceId, err)
 			}
 			out = append(out, dev)
 		}
-		c.log.WithField("count", len(out)).Debug("listed chromeos devices page")
+		c.log.WithFields(logrus.Fields{"page": pageCount, "total": len(out)}).Debug("listed chromeos devices page")
 		if resp.NextPageToken == "" {
 			break
 		}
@@ -100,7 +101,11 @@ func (c *Client) GetDevice(ctx context.Context, deviceID string) (Device, error)
 	if err != nil {
 		return Device{}, fmt.Errorf("get chromeos device %s: %w", deviceID, err)
 	}
-	return wrapDevice(d)
+	dev, err := wrapDevice(d)
+	if err != nil {
+		return Device{}, fmt.Errorf("wrap device %s: %w", deviceID, err)
+	}
+	return dev, nil
 }
 
 // About is a lightweight connectivity check: lists a single device page and
@@ -109,7 +114,7 @@ func (c *Client) About(ctx context.Context) (string, error) {
 	_, err := c.svc.Chromeosdevices.List(c.customerID).
 		Projection("BASIC").MaxResults(1).Context(ctx).Do()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("connectivity check: %w", err)
 	}
 	return c.customerID, nil
 }
