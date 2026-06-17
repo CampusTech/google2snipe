@@ -247,6 +247,69 @@ func TestSyncDeviceFreshnessSkip(t *testing.T) {
 	}
 }
 
+func TestSyncDeviceCheckoutSyncReassigns(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Sync.Force = true
+	cfg.Sync.Checkout = config.CheckoutConfig{
+		Enabled: true, UseAnnotatedUser: true, FallbackToRecent: false,
+		MatchField: "email", Mode: "sync",
+	}
+	stub := &stubSnipe{
+		bySerial: map[string][]snipe.Asset{
+			"S1": {{ID: 7, Serial: "S1", StatusID: 1, AssignedToID: 10, CustomFields: map[string]string{}}},
+		},
+		users: []snipe.User{{ID: 20, Email: "new@example.com"}},
+	}
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+		SerialNumber: "S1", Status: "ACTIVE", Model: "Acer Chromebook 311",
+		AnnotatedUser: "new@example.com",
+	}))
+
+	// Checkin must have been called for asset 7 before checkout
+	if len(stub.checkins) != 1 || stub.checkins[0] != 7 {
+		t.Errorf("expected checkin of asset 7, got checkins=%v", stub.checkins)
+	}
+	// Checkout must target the new user (20)
+	if stub.checkouts == nil || stub.checkouts[7] != 20 {
+		t.Errorf("expected checkout asset 7 -> user 20, got checkouts=%v", stub.checkouts)
+	}
+}
+
+func TestSyncDeviceAssignModeNoReassign(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Sync.Force = true
+	cfg.Sync.Checkout = config.CheckoutConfig{
+		Enabled: true, UseAnnotatedUser: true, FallbackToRecent: false,
+		MatchField: "email", Mode: "assign",
+	}
+	stub := &stubSnipe{
+		bySerial: map[string][]snipe.Asset{
+			"S1": {{ID: 7, Serial: "S1", StatusID: 1, AssignedToID: 10, CustomFields: map[string]string{}}},
+		},
+		users: []snipe.User{{ID: 20, Email: "new@example.com"}},
+	}
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+		SerialNumber: "S1", Status: "ACTIVE", Model: "Acer Chromebook 311",
+		AnnotatedUser: "new@example.com",
+	}))
+
+	// assign mode must not checkin or checkout when already assigned
+	if len(stub.checkins) != 0 {
+		t.Errorf("assign mode must not checkin, got checkins=%v", stub.checkins)
+	}
+	if len(stub.checkouts) != 0 {
+		t.Errorf("assign mode must not checkout when already assigned, got checkouts=%v", stub.checkouts)
+	}
+}
+
 func TestSyncDeviceDryRunNoMutators(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Sync.DryRun = true

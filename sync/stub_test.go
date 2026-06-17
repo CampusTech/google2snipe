@@ -24,6 +24,7 @@ type stubSnipe struct {
 	created   []snipe.Asset
 	patched   map[int]snipe.Asset
 	checkouts map[int]int // assetID -> userID
+	checkins  []int       // assetIDs that were checked in
 	models    []snipe.Model
 	manufs    []snipe.Manufacturer
 	users     []snipe.User
@@ -54,7 +55,10 @@ func (s *stubSnipe) CheckoutAssetToUser(assetID, userID int) error {
 	s.checkouts[assetID] = userID
 	return nil
 }
-func (s *stubSnipe) CheckinAsset(assetID int) error        { return nil }
+func (s *stubSnipe) CheckinAsset(assetID int) error {
+	s.checkins = append(s.checkins, assetID)
+	return nil
+}
 func (s *stubSnipe) ListAllModels() ([]snipe.Model, error) { return s.models, nil }
 func (s *stubSnipe) CreateModel(m snipe.Model) (snipe.Model, error) {
 	s.nextID++

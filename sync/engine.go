@@ -377,6 +377,15 @@ func (e *Engine) applyCheckout(dev google.Device, asset snipe.Asset, l *logrus.E
 		l.WithField("user_id", userID).Info("[DRY RUN] would check out asset")
 		return
 	}
+	// For sync/force mode: if the asset is currently checked out to a different
+	// user, check it in first so Snipe-IT will accept the reassignment.
+	mode := e.cfg.Sync.Checkout.Mode
+	if (mode == "sync" || mode == "force") && asset.AssignedToID != 0 && asset.AssignedToID != userID {
+		if err := e.snipe.CheckinAsset(asset.ID); err != nil {
+			l.WithError(err).Warn("checkin before reassign failed")
+			return
+		}
+	}
 	if err := e.snipe.CheckoutAssetToUser(asset.ID, userID); err != nil {
 		l.WithError(err).Warn("checkout failed")
 		return

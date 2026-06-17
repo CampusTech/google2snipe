@@ -101,7 +101,14 @@ func loadDevices(ctx context.Context, cfg *config.Config) ([]google.Device, erro
 		if err != nil {
 			return nil, fmt.Errorf("read cache: %w", err)
 		}
-		return google.DeserializeDevices(data)
+		devs, err := google.DeserializeDevices(data)
+		if err != nil {
+			return nil, err
+		}
+		if syncDeviceID != "" {
+			devs = filterDeviceID(devs, syncDeviceID)
+		}
+		return devs, nil
 	}
 
 	gc, err := google.New(cfg.Google, googleLog)
@@ -130,6 +137,16 @@ func filterSerial(devs []google.Device, serial string) []google.Device {
 	var out []google.Device
 	for _, d := range devs {
 		if d.SerialNumber == serial {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func filterDeviceID(devs []google.Device, deviceID string) []google.Device {
+	var out []google.Device
+	for _, d := range devs {
+		if d.DeviceId == deviceID {
 			out = append(out, d)
 		}
 	}
