@@ -159,6 +159,42 @@ device JSON, and the reusable transforms: date/`unix_to_iso`/ISO passthrough,
 `comma_thousands`, byte/GB conversions, etc. Add ChromeOS-handy transforms as
 needed. Empty/missing/unparseable → `""` (never written) for unit/date transforms.
 
+### Obtaining the JSON for gjson
+
+The official SDK returns typed `*admin.ChromeOsDevice` structs, not raw JSON.
+The client wrapper `json.Marshal()`s each device back to JSON and stores it as a
+per-device `Raw json.RawMessage` (the equivalent of fleet2snipe's `Host.Raw`).
+gjson then runs over `Raw`. Because the generated SDK struct carries a JSON tag
+for every field in Google's discovery document, this captures the **entire
+documented ChromeOsDevice schema**, including all nested objects and arrays.
+
+gjson supports every field shape in the resource:
+
+- Scalars: `serialNumber`, `orgUnitPath`, `status`
+- Nested objects: `tpmVersionInfo.family`, `osUpdateStatus.state`, `diskSpaceUsage.capacityBytes`
+- Array index / flatten: `recentUsers.0.email`, `recentUsers.#.email`, `activeTimeRanges.#`
+- Array query: `recentUsers.#(type=="USER_TYPE_MANAGED")#.email`
+- Deep nesting: `diskVolumeReports.0.volumeInfo.0.storageFree`,
+  `cpuInfo.0.logicalCpus.0.cStates.0.sessionDuration`,
+  `cpuStatusReports.0.cpuTemperatureInfo.0.temperature`
+
+**Caveats / decisions:**
+
+- **Future fields:** re-marshaling only emits fields the pinned SDK version
+  knows. A brand-new Google field not yet in the SDK is dropped until
+  `go get -u google.golang.org/api`. (A raw-HTTP-body capture via custom
+  transport would future-proof this but is out of scope for v1.)
+- **`projection=FULL` fields:** the heavy report arrays (`recentUsers`,
+  `activeTimeRanges`, `cpuStatusReports`, `cpuInfo`, `diskVolumeReports`,
+  `systemRamFreeReports`, `deviceFiles`, `screenshotFiles`, `lastKnownNetwork`,
+  `backlightInfo`, `fanInfo`, `bluetoothAdapterInfo`, `diskSpaceUsage`,
+  `tpmVersionInfo`) are only populated with `projection=full`. Config validation
+  warns if a mapped path targets a FULL-only field while `projection: basic`.
+- **int64-as-string:** Google encodes int64 fields as JSON strings
+  (`systemRamTotal`, `diskSpaceUsage.capacityBytes`,
+  `diskVolumeReports.*.volumeInfo.*.storageTotal/storageFree`). gjson reads
+  string-or-number transparently; byte→GB transforms parse the string.
+
 Per-key freshness: skip update when device `lastSync` (or
 `lastEnrollmentTime`) is older than Snipe `updated_at`, unless `--force`.
 
