@@ -7,10 +7,94 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
+
+func TestRetryAfterDurationParsesAndClamps(t *testing.T) {
+	cases := []struct {
+		in   string
+		want time.Duration
+		ok   bool
+	}{
+		{"", 0, false},
+		{"5", 5 * time.Second, true},
+		{"0", 0, true},               // present zero => retry immediately (distinct from absent)
+		{"999999", maxBackoff, true}, // must clamp to the cap, not sleep for days
+		{"-3", 0, false},
+		{"banana", 0, false}, // HTTP-date / garbage => treated as absent
+	}
+	for _, c := range cases {
+		h := http.Header{}
+		h.Set("Retry-After", c.in)
+		got, ok := retryAfterDuration(h)
+		if got != c.want || ok != c.ok {
+			t.Errorf("retryAfterDuration(%q) = (%v, %v), want (%v, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestLicenseClientRetriesThenSucceeds(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) < 3 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"success"}`))
+	}))
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	// EnsureSeats issues a PATCH through do(); it must ride out the 429s and succeed.
+	if err := c.EnsureSeats(1, 5); err != nil {
+		t.Fatalf("EnsureSeats should retry past 429s and succeed, got %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("server saw %d calls, want 3 (2 retries then success)", got)
+	}
+}
+
+func TestLicenseClientGivesUpAfterPersistent429(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	err := c.EnsureSeats(1, 5)
+	if err == nil || !strings.Contains(err.Error(), "429") {
+		t.Fatalf("want a 429 error after exhausting retries, got %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got < 2 {
+		t.Fatalf("server saw %d calls, want multiple retry attempts", got)
+	}
+}
+
+func TestLicenseClientRetries5xxOnGet(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) < 2 {
+			w.WriteHeader(http.StatusBadGateway) // 502
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":0,"rows":[]}`))
+	}))
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	if _, err := c.ListLicenses(); err != nil {
+		t.Fatalf("ListLicenses should retry a 5xx and succeed, got %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("server saw %d calls, want 2 (1 retry then success)", got)
+	}
+}
 
 func TestLicenseClientDryRunSentinel(t *testing.T) {
 	c := NewLicenseClient("https://snipe.invalid", "key", true /*dryRun*/, logrus.New())

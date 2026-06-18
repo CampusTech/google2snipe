@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -172,17 +171,17 @@ func (c *Client) retry429(op string, fn func() (*http.Response, error)) error {
 		}
 		wait := backoff
 		if resp != nil {
-			if ra := resp.Header.Get("Retry-After"); ra != "" {
-				if secs, perr := strconv.Atoi(strings.TrimSpace(ra)); perr == nil && secs >= 0 {
-					wait = time.Duration(secs) * time.Second
-				}
+			// retryAfterDuration (snipe/licenses.go) honors a numeric Retry-After and clamps
+			// it to maxBackoff so one large/malformed value can't stall the sync for hours.
+			if d, ok := retryAfterDuration(resp.Header); ok {
+				wait = d
 			}
 		}
 		c.logger.WithFields(logrus.Fields{"op": op, "attempt": attempt, "wait": wait.String()}).
 			Warn("snipe request failed (429/5xx/transient); backing off")
 		time.Sleep(wait)
-		if backoff *= 2; backoff > 30*time.Second {
-			backoff = 30 * time.Second
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
 		}
 	}
 }
