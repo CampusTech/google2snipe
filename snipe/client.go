@@ -88,11 +88,13 @@ var _ interface {
 	PatchAsset(id int, a Asset) (Asset, error)
 	CheckoutAssetToUser(assetID, userID int) error
 	CheckinAsset(assetID int) error
+	ListAllAssets() ([]Asset, error)
 	ListAllModels() ([]Model, error)
 	CreateModel(m Model) (Model, error)
 	ListAllManufacturers() ([]Manufacturer, error)
 	CreateManufacturer(name string) (Manufacturer, error)
 	ListAllUsers() ([]User, error)
+	ListAllStatusLabels() ([]StatusLabel, error)
 	SetupFields(fieldsetIDs []int, fields []FieldDef) (map[string]string, error)
 	Ping() (string, error)
 } = (*Client)(nil)
