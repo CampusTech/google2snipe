@@ -3,7 +3,7 @@ module github.com/CampusTech/google2snipe
 go 1.26.4
 
 require (
-	github.com/michellepellon/go-snipeit v0.0.0-20260308041334-b4baa85a4d8c
+	github.com/michellepellon/go-snipeit v0.0.0-20260618143325-14ded9c8bf9f
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
 	github.com/tidwall/gjson v1.19.0
@@ -42,5 +42,3 @@ require (
 	google.golang.org/grpc v1.81.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
-
-replace github.com/michellepellon/go-snipeit => github.com/CampusTech/go-snipeit v0.0.1-campustech
