@@ -281,8 +281,16 @@ func (c *Client) CheckinAsset(assetID int) error {
 	if c.dryRun {
 		return ErrDryRun
 	}
-	resp, _, err := c.sc.Assets.CheckinContext(context.Background(), assetID, map[string]any{})
+	resp, httpResp, err := c.sc.Assets.CheckinContext(context.Background(), assetID, map[string]any{})
 	if err != nil {
+		// go-snipeit types the checkin response's payload.model as an object,
+		// but Snipe-IT returns it as a string, so the SUCCESS body fails to
+		// unmarshal. If the HTTP call returned 2xx, the check-in happened
+		// server-side — treat a body-parse error as success.
+		if httpResp != nil && httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 &&
+			strings.Contains(err.Error(), "unmarshal") {
+			return nil
+		}
 		return fmt.Errorf("checking in asset %d: %w", assetID, err)
 	}
 	if resp.Status != "success" {
