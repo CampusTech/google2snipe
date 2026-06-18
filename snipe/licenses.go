@@ -126,11 +126,64 @@ func (c *LicenseClient) ListLicenses() ([]License, error) {
 	return out, nil
 }
 
-// EnsureLicense is a STUB replaced in Task 3. In dry-run it must return ErrDryRun
-// without dialing; otherwise it panics (never reached this task).
+// EnsureLicense finds a license by name or creates it. On create it sets the
+// category, seats, cost, reassignable flag, and (optional) expiration.
 func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
+	existing, err := c.ListLicenses()
+	if err != nil {
+		return License{}, err
+	}
+	for _, l := range existing {
+		if strings.EqualFold(l.Name, spec.Name) {
+			return l, nil
+		}
+	}
 	if c.dryRun {
 		return License{}, ErrDryRun
 	}
-	panic("implemented in Task 3")
+	body := map[string]any{
+		"name":          spec.Name,
+		"seats":         max(spec.Seats, 1),
+		"category_id":   spec.CategoryID,
+		"reassignable":  spec.Reassignable,
+		"purchase_cost": spec.CostPerSeat,
+	}
+	if spec.ExpirationDate != "" {
+		body["expiration_date"] = spec.ExpirationDate
+	}
+	raw, _, err := c.do(http.MethodPost, "/licenses", body)
+	if err != nil {
+		return License{}, err
+	}
+	var r snipeResp
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return License{}, fmt.Errorf("creating license %q: %w", spec.Name, err)
+	}
+	if r.Status != "success" {
+		return License{}, fmt.Errorf("creating license %q: %s", spec.Name, string(r.Messages))
+	}
+	var p struct {
+		ID    int    `json:"id"`
+		Name  string `json:"name"`
+		Seats int    `json:"seats"`
+	}
+	_ = json.Unmarshal(r.Payload, &p)
+	return License{ID: p.ID, Name: p.Name, Seats: p.Seats}, nil
+}
+
+// EnsureSeats grows the license's seat total to at least total.
+func (c *LicenseClient) EnsureSeats(licenseID, total int) error {
+	if c.dryRun {
+		return ErrDryRun
+	}
+	raw, _, err := c.do(http.MethodPatch, fmt.Sprintf("/licenses/%d", licenseID), map[string]any{"seats": total})
+	if err != nil {
+		return err
+	}
+	var r snipeResp
+	_ = json.Unmarshal(raw, &r)
+	if r.Status != "success" {
+		return fmt.Errorf("growing license %d seats to %d: %s", licenseID, total, string(r.Messages))
+	}
+	return nil
 }
