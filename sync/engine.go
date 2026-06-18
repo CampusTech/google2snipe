@@ -16,6 +16,7 @@ import (
 // SnipeClient is the subset of the snipe wrapper the engine depends on.
 type SnipeClient interface {
 	GetAssetBySerial(serial string) ([]snipe.Asset, error)
+	ListAllAssets() ([]snipe.Asset, error)
 	CreateAsset(a snipe.Asset) (snipe.Asset, error)
 	PatchAsset(id int, a snipe.Asset) (snipe.Asset, error)
 	CheckoutAssetToUser(assetID, userID int) error
@@ -41,6 +42,7 @@ type Engine struct {
 	manufacturers      map[string]snipe.Manufacturer // keyed by lowercased name
 	userIndex          map[string]int                // keyed by lowercased match-field value
 	deployableStatuses map[int]bool                  // Snipe status-label IDs that allow checkout
+	assetIndex         map[string]snipe.Asset        // keyed by strings.ToLower(serial)
 	stats              Stats
 }
 
@@ -132,9 +134,26 @@ func (e *Engine) Warm() error {
 			e.deployableStatuses[s.ID] = true
 		}
 	}
+	assets, err := e.snipe.ListAllAssets()
+	if err != nil {
+		return err
+	}
+	e.assetIndex = make(map[string]snipe.Asset, len(assets))
+	for _, a := range assets {
+		if a.Serial == "" {
+			continue
+		}
+		key := strings.ToLower(a.Serial)
+		if _, exists := e.assetIndex[key]; exists {
+			e.log.WithField("serial", a.Serial).Warn("multiple assets share this serial; keeping first seen")
+			continue
+		}
+		e.assetIndex[key] = a
+	}
 	e.log.WithFields(logrus.Fields{
 		"models": len(e.models), "manufacturers": len(e.manufacturers),
 		"users": len(e.userIndex), "deployable_statuses": len(e.deployableStatuses),
+		"asset_index": len(e.assetIndex),
 	}).Info("warmed snipe-it caches")
 	return nil
 }
@@ -289,25 +308,16 @@ func (e *Engine) SyncDevice(dev google.Device) {
 	}
 	l := e.log.WithField("serial", serial)
 
-	existing, err := e.snipe.GetAssetBySerial(serial)
-	if err != nil {
-		l.WithError(err).Error("snipe lookup failed")
-		e.stats.Errors++
-		return
-	}
-	switch len(existing) {
-	case 0:
+	existing, ok := e.assetIndex[strings.ToLower(serial)]
+	if !ok {
 		if e.cfg.Sync.UpdateOnly {
 			l.Debug("update-only: skipping create")
 			e.stats.Skipped++
 			return
 		}
 		e.create(dev, l)
-	case 1:
-		e.update(dev, existing[0], l)
-	default:
-		l.WithField("matches", len(existing)).Warn("multiple assets share this serial; skipping")
-		e.stats.Skipped++
+	} else {
+		e.update(dev, existing, l)
 	}
 }
 

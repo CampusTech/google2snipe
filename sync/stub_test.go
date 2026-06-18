@@ -78,3 +78,10 @@ func (s *stubSnipe) ListAllUsers() ([]snipe.User, error) { return s.users, nil }
 func (s *stubSnipe) ListAllStatusLabels() ([]snipe.StatusLabel, error) {
 	return s.statusLabels, nil
 }
+func (s *stubSnipe) ListAllAssets() ([]snipe.Asset, error) {
+	var out []snipe.Asset
+	for _, list := range s.bySerial {
+		out = append(out, list...)
+	}
+	return out, nil
+}

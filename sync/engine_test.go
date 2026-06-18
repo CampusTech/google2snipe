@@ -332,6 +332,33 @@ func TestSyncDeviceDryRunNoMutators(t *testing.T) {
 	}
 }
 
+func TestSyncUsesAssetIndexForExisting(t *testing.T) {
+	stub := &stubSnipe{
+		bySerial: map[string][]snipe.Asset{
+			"ABC": {{ID: 9, Serial: "ABC", ModelID: 1, StatusID: 1, CustomFields: map[string]string{}}},
+		},
+	}
+	cfg := baseCfg()
+	cfg.Sync.Force = true // skip freshness gate so the update always proceeds
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+	// Confirm index was populated from bySerial via ListAllAssets
+	if _, found := e.assetIndex["abc"]; !found {
+		t.Fatal("assetIndex should contain 'abc' after Warm")
+	}
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+		SerialNumber: "ABC", Status: "ACTIVE", Model: "Acer Chromebook 311",
+	}))
+	if len(stub.created) != 0 {
+		t.Errorf("expected update via index, but a create happened: %+v", stub.created)
+	}
+	if _, ok := stub.patched[9]; !ok {
+		t.Errorf("expected asset 9 to be patched via the index, patched=%v", stub.patched)
+	}
+}
+
 func TestApplyCheckoutSkipsNonDeployableStatus(t *testing.T) {
 	cfg := baseCfg() // DefaultStatusID = 1
 	cfg.SnipeIT.StatusMap = map[string]int{"DISABLED": 9}
