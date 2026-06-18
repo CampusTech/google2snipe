@@ -3,6 +3,7 @@ package sync
 import (
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -32,12 +33,22 @@ type SnipeClient interface {
 // Stats accumulates per-run counters.
 type Stats struct{ Total, Created, Updated, Skipped, Errors int }
 
+// add sums each counter field of o into s.
+func (s *Stats) add(o Stats) {
+	s.Total += o.Total
+	s.Created += o.Created
+	s.Updated += o.Updated
+	s.Skipped += o.Skipped
+	s.Errors += o.Errors
+}
+
 // Engine reconciles ChromeOS devices into Snipe-IT.
 type Engine struct {
 	cfg   *config.Config
 	snipe SnipeClient
 	log   *logrus.Logger
 
+	mu                 sync.Mutex                    // guards models and manufacturers
 	models             map[string]snipe.Model        // keyed by model name
 	manufacturers      map[string]snipe.Manufacturer // keyed by lowercased name
 	userIndex          map[string]int                // keyed by lowercased match-field value
@@ -179,6 +190,8 @@ func (e *Engine) ensureManufacturer(dev google.Device) (int, error) {
 	if id, ok := e.cfg.SnipeIT.ManufacturerIDs[strings.ToLower(vendor)]; ok && id != 0 {
 		return id, nil
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if m, ok := e.manufacturers[strings.ToLower(vendor)]; ok {
 		return m.ID, nil
 	}
@@ -213,12 +226,23 @@ func (e *Engine) ensureModel(dev google.Device) (int, error) {
 			}
 		}
 	}
+	e.mu.Lock()
 	if m, ok := e.models[name]; ok {
+		e.mu.Unlock()
 		return m.ID, nil
 	}
+	e.mu.Unlock()
+
 	manufID, err := e.ensureManufacturer(dev)
 	if err != nil {
 		return 0, err
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// Re-check after acquiring the lock (another goroutine may have created it).
+	if m, ok := e.models[name]; ok {
+		return m.ID, nil
 	}
 	m, err := e.snipe.CreateModel(snipe.Model{
 		Name:           name,
@@ -279,13 +303,31 @@ func (e *Engine) lookupUser(email string) (int, bool) {
 	return 0, false
 }
 
-// SyncAll reconciles every device and returns run statistics.
+// SyncAll reconciles every device through a bounded worker pool and returns run statistics.
 func (e *Engine) SyncAll(devs []google.Device) Stats {
-	for i, d := range devs {
-		e.SyncDevice(d)
-		if (i+1)%50 == 0 {
-			e.log.WithField("processed", i+1).Info("syncing")
-		}
+	workers := e.cfg.Sync.Concurrency
+	if workers < 1 {
+		workers = 1
+	}
+	jobs := make(chan google.Device)
+	partials := make([]Stats, workers)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for d := range jobs {
+				e.syncDevice(d, &partials[idx])
+			}
+		}(w)
+	}
+	for _, d := range devs {
+		jobs <- d
+	}
+	close(jobs)
+	wg.Wait()
+	for _, p := range partials {
+		e.stats.add(p)
 	}
 	e.log.WithFields(logrus.Fields{
 		"total": e.stats.Total, "created": e.stats.Created, "updated": e.stats.Updated,
@@ -299,11 +341,16 @@ func (e *Engine) StatsSnapshot() Stats { return e.stats }
 
 // SyncDevice reconciles a single device into Snipe-IT.
 func (e *Engine) SyncDevice(dev google.Device) {
-	e.stats.Total++
+	e.syncDevice(dev, &e.stats)
+}
+
+// syncDevice is the per-device implementation; counters are written to st.
+func (e *Engine) syncDevice(dev google.Device, st *Stats) {
+	st.Total++
 	serial := strings.TrimSpace(dev.SerialNumber)
 	if serial == "" {
 		e.log.WithField("device_id", dev.DeviceId).Debug("skipping device with empty serial")
-		e.stats.Skipped++
+		st.Skipped++
 		return
 	}
 	l := e.log.WithField("serial", serial)
@@ -312,25 +359,25 @@ func (e *Engine) SyncDevice(dev google.Device) {
 	if !ok {
 		if e.cfg.Sync.UpdateOnly {
 			l.Debug("update-only: skipping create")
-			e.stats.Skipped++
+			st.Skipped++
 			return
 		}
-		e.create(dev, l)
+		e.createDev(dev, l, st)
 	} else {
-		e.update(dev, existing, l)
+		e.updateDev(dev, existing, l, st)
 	}
 }
 
-func (e *Engine) create(dev google.Device, l *logrus.Entry) {
+func (e *Engine) createDev(dev google.Device, l *logrus.Entry, st *Stats) {
 	if e.cfg.Sync.DryRun {
 		l.WithField("model", dev.Model).Info("[DRY RUN] would create asset")
-		e.stats.Created++
+		st.Created++
 		return
 	}
 	modelID, err := e.ensureModel(dev)
 	if err != nil {
 		l.WithError(err).Error("ensure model failed")
-		e.stats.Errors++
+		st.Errors++
 		return
 	}
 	asset := snipe.Asset{
@@ -346,30 +393,30 @@ func (e *Engine) create(dev google.Device, l *logrus.Entry) {
 	created, err := e.snipe.CreateAsset(asset)
 	if err != nil {
 		l.WithError(err).Error("create asset failed")
-		e.stats.Errors++
+		st.Errors++
 		return
 	}
 	l.WithField("snipe_id", created.ID).Info("created asset")
 	e.applyCheckout(dev, created, l)
-	e.stats.Created++
+	st.Created++
 }
 
-func (e *Engine) update(dev google.Device, existing snipe.Asset, l *logrus.Entry) {
+func (e *Engine) updateDev(dev google.Device, existing snipe.Asset, l *logrus.Entry, st *Stats) {
 	if !e.cfg.Sync.Force && deviceOlderThan(dev, existing.UpdatedAt) {
 		l.Debug("snipe record newer than device; skipping field update")
 		e.applyCheckout(dev, existing, l)
-		e.stats.Skipped++
+		st.Skipped++
 		return
 	}
 	if e.cfg.Sync.DryRun {
 		l.WithField("snipe_id", existing.ID).Info("[DRY RUN] would update asset")
-		e.stats.Updated++
+		st.Updated++
 		return
 	}
 	modelID, err := e.ensureModel(dev)
 	if err != nil {
 		l.WithError(err).Error("ensure model failed")
-		e.stats.Errors++
+		st.Errors++
 		return
 	}
 	patch := snipe.Asset{
@@ -382,12 +429,12 @@ func (e *Engine) update(dev google.Device, existing snipe.Asset, l *logrus.Entry
 	}
 	if _, err := e.snipe.PatchAsset(existing.ID, patch); err != nil {
 		l.WithError(err).Error("update asset failed")
-		e.stats.Errors++
+		st.Errors++
 		return
 	}
 	l.WithField("snipe_id", existing.ID).Info("updated asset")
 	e.applyCheckout(dev, existing, l)
-	e.stats.Updated++
+	st.Updated++
 }
 
 func (e *Engine) applyCheckout(dev google.Device, asset snipe.Asset, l *logrus.Entry) {

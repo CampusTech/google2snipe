@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -399,5 +400,29 @@ func TestApplyCheckoutSkipsNonDeployableStatus(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("deployable device should be checked out to user 10, got %v", stub.checkouts)
+	}
+}
+
+func TestSyncAllConcurrentNoRace(t *testing.T) {
+	stub := &stubSnipe{
+		bySerial:     map[string][]snipe.Asset{},
+		statusLabels: []snipe.StatusLabel{{ID: 2, Type: "deployable"}},
+	}
+	cfg := baseCfg()
+	cfg.Sync.Concurrency = 8
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+	var devs []google.Device
+	for i := 0; i < 200; i++ {
+		devs = append(devs, dev(t, &admin.ChromeOsDevice{
+			SerialNumber: fmt.Sprintf("S%03d", i),
+			Status:       "ACTIVE",
+		}))
+	}
+	st := e.SyncAll(devs)
+	if st.Created != 200 {
+		t.Fatalf("Created = %d, want 200", st.Created)
 	}
 }
