@@ -2,6 +2,7 @@ package licensesync
 
 import (
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -9,20 +10,26 @@ import (
 	"github.com/CampusTech/google2snipe/snipe"
 )
 
-// stubLC is an in-memory LicenseClient.
+// stubLC is an in-memory LicenseClient. Its mutators are guarded by mu so the engine's
+// concurrent seat checkin/checkout calls are exercised cleanly under `go test -race`.
 type stubLC struct {
+	mu       sync.Mutex
 	lic      snipe.License
 	seats    []snipe.LicenseSeat
 	nextSeat int
 }
 
 func (s *stubLC) EnsureLicense(spec snipe.LicenseSpec) (snipe.License, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.lic.ID == 0 {
 		s.lic = snipe.License{ID: 1, Name: spec.Name, Seats: spec.Seats}
 	}
 	return s.lic, nil
 }
 func (s *stubLC) EnsureSeats(licenseID, total int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for len(s.seats) < total {
 		s.nextSeat++
 		s.seats = append(s.seats, snipe.LicenseSeat{ID: s.nextSeat})
@@ -30,33 +37,96 @@ func (s *stubLC) EnsureSeats(licenseID, total int) error {
 	s.lic.Seats = len(s.seats)
 	return nil
 }
-func (s *stubLC) ListSeats(licenseID int) ([]snipe.LicenseSeat, error) { return s.seats, nil }
-func (s *stubLC) setUser(seatID, uid int) {
+func (s *stubLC) ListSeats(licenseID int) ([]snipe.LicenseSeat, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]snipe.LicenseSeat(nil), s.seats...), nil
+}
+
+// setSeat assigns (or clears) a seat's holder. Caller must hold s.mu.
+func (s *stubLC) setSeat(seatID, userID, assetID int) {
 	for i := range s.seats {
 		if s.seats[i].ID == seatID {
-			s.seats[i].AssignedUserID, s.seats[i].AssignedAssetID = uid, 0
+			s.seats[i].AssignedUserID, s.seats[i].AssignedAssetID = userID, assetID
 		}
 	}
 }
 func (s *stubLC) CheckoutSeatToUser(licenseID, seatID, userID int) error {
-	s.setUser(seatID, userID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setSeat(seatID, userID, 0)
 	return nil
 }
 func (s *stubLC) CheckoutSeatToAsset(licenseID, seatID, assetID int) error {
-	for i := range s.seats {
-		if s.seats[i].ID == seatID {
-			s.seats[i].AssignedAssetID, s.seats[i].AssignedUserID = assetID, 0
-		}
-	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setSeat(seatID, 0, assetID)
 	return nil
 }
 func (s *stubLC) CheckinSeat(licenseID, seatID int) error {
-	for i := range s.seats {
-		if s.seats[i].ID == seatID {
-			s.seats[i].AssignedUserID, s.seats[i].AssignedAssetID = 0, 0
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.setSeat(seatID, 0, 0)
+	return nil
+}
+
+func TestReconcileConcurrentCheckoutNoRace(t *testing.T) {
+	const n = 300
+	stub := &stubLC{lic: snipe.License{ID: 1, Name: "Big", Seats: n}, nextSeat: n}
+	for i := 1; i <= n; i++ {
+		stub.seats = append(stub.seats, snipe.LicenseSeat{ID: i})
+	}
+	e := New(stub, logrus.New(), WithConcurrency(8))
+	targets := make([]Target, n)
+	for i := range targets {
+		targets[i] = Target{IsUser: false, ID: 1000 + i}
+	}
+	st, err := e.Reconcile(snipe.LicenseSpec{Name: "Big", Reassignable: false, Seats: n}, targets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.CheckedOut != n {
+		t.Fatalf("CheckedOut = %d, want %d", st.CheckedOut, n)
+	}
+	heldBy := map[int]int{} // assetID -> seats held
+	assigned := 0
+	for _, s := range stub.seats {
+		if s.AssignedAssetID != 0 {
+			heldBy[s.AssignedAssetID]++
+			assigned++
 		}
 	}
-	return nil
+	if assigned != n {
+		t.Fatalf("assigned %d seats, want %d (every device seated exactly once, no double-use)", assigned, n)
+	}
+	for aid, c := range heldBy {
+		if c != 1 {
+			t.Fatalf("asset %d holds %d seats, want exactly 1", aid, c)
+		}
+	}
+}
+
+func TestReconcileConcurrentCheckinNoRace(t *testing.T) {
+	const n = 300
+	// Reassignable license with all n seats held by stale users (none desired): every seat
+	// is reclaimed concurrently.
+	stub := &stubLC{lic: snipe.License{ID: 1, Name: "WS", Seats: n}, nextSeat: n}
+	for i := 1; i <= n; i++ {
+		stub.seats = append(stub.seats, snipe.LicenseSeat{ID: i, AssignedUserID: 90000 + i})
+	}
+	e := New(stub, logrus.New(), WithConcurrency(8))
+	st, err := e.Reconcile(snipe.LicenseSpec{Name: "WS", Reassignable: true, Seats: n}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.CheckedIn != n {
+		t.Fatalf("CheckedIn = %d, want %d", st.CheckedIn, n)
+	}
+	for _, s := range stub.seats {
+		if s.AssignedUserID != 0 {
+			t.Fatalf("seat %d still held by user %d, want all checked in", s.ID, s.AssignedUserID)
+		}
+	}
 }
 
 func TestReconcileReassignableCheckoutAndCheckin(t *testing.T) {

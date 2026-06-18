@@ -58,7 +58,7 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	lc := snipe.NewLicenseClient(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, cfg.Sync.DryRun, licLog)
-	engine := licensesync.New(lc, licLog)
+	engine := licensesync.New(lc, licLog, licensesync.WithConcurrency(cfg.Sync.Concurrency))
 
 	// Chrome license sync needs the device list (cache or fetch) and a
 	// serial→asset index. Workspace-only configs skip all of it so they don't

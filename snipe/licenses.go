@@ -2,10 +2,12 @@ package snipe
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,33 +77,106 @@ func check2xx(status int, raw []byte, what string) error {
 // do issues an authenticated request to /api/v1<path> and returns the raw body, so
 // list ({total,rows}) and mutation ({status,payload}) callers each decode what they need.
 // Mutating callers must check c.dryRun BEFORE calling do.
+//
+// It retries on rate-limiting and transient failures (honoring Retry-After, then an
+// exponential backoff, both capped at maxBackoff). A 429 is always retried — it was
+// rate-limited and never processed. A 5xx or transient network error is retried only for
+// idempotent methods. CONTRACT: every PATCH caller in this package MUST send an
+// absolute/idempotent body (updateLicense, patchSeat, EnsureSeats all do); do not add a
+// relative-mutation PATCH without making do() skip retries for it. POST (license/category
+// create) is never retried on 5xx/network errors so a create that may have succeeded is not
+// replayed.
 func (c *LicenseClient) do(method, path string, body any) ([]byte, int, error) {
-	var rdr io.Reader
+	var bodyBytes []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, 0, err
 		}
-		rdr = bytes.NewReader(b)
+		bodyBytes = b
 	}
-	req, err := http.NewRequest(method, c.baseURL+"/api/v1"+path, rdr)
-	if err != nil {
-		return nil, 0, err
+	idempotent := method != http.MethodPost
+	const maxAttempts = 6
+	backoff := 500 * time.Millisecond
+
+	for attempt := 1; ; attempt++ {
+		var rdr io.Reader
+		if bodyBytes != nil {
+			rdr = bytes.NewReader(bodyBytes)
+		}
+		// context.Background() matches the existing asset client (snipe/client.go), which also
+		// does not thread a caller context yet; this satisfies noctx and leaves a clean seam
+		// for a future caller-supplied context to enable graceful cancellation.
+		req, err := http.NewRequestWithContext(context.Background(), method, c.baseURL+"/api/v1"+path, rdr)
+		if err != nil {
+			return nil, 0, err
+		}
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+		c.log.WithFields(logrus.Fields{"method": method, "path": path, "attempt": attempt}).Debug("snipe license request")
+
+		var (
+			data   []byte
+			status int
+			wait   time.Duration
+			retry  bool
+			reason string
+		)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			if !idempotent || attempt >= maxAttempts {
+				return nil, 0, fmt.Errorf("%s %s: after %d attempt(s): %w", method, path, attempt, err)
+			}
+			retry, wait, reason = true, backoff, err.Error()
+		} else {
+			var rerr error
+			data, rerr = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if rerr != nil {
+				return data, resp.StatusCode, rerr
+			}
+			status = resp.StatusCode
+			if (status == http.StatusTooManyRequests || (status >= 500 && idempotent)) && attempt < maxAttempts {
+				retry, wait, reason = true, backoff, fmt.Sprintf("HTTP %d", status)
+				if d, ok := retryAfterDuration(resp.Header); ok {
+					wait = d
+				}
+			}
+		}
+		if !retry {
+			return data, status, nil
+		}
+		c.log.WithFields(logrus.Fields{"method": method, "path": path, "attempt": attempt, "wait": wait.String(), "reason": reason}).
+			Warn("snipe license request failed (429/5xx/transient); backing off")
+		time.Sleep(wait)
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	c.log.WithFields(logrus.Fields{"method": method, "path": path}).Debug("snipe license request")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, 0, fmt.Errorf("%s %s: %w", method, path, err)
+}
+
+// maxBackoff caps both the exponential retry backoff and any server-provided Retry-After, so
+// a single large (or malformed-but-numeric) Retry-After can't stall the whole sync for hours.
+const maxBackoff = 30 * time.Second
+
+// retryAfterDuration parses a Retry-After header given in whole seconds (delta-seconds form
+// only; an HTTP-date value is treated as absent and falls back to exponential backoff). The
+// bool reports whether a valid value was present (a present "0" means retry immediately,
+// distinct from no header at all). The returned wait is clamped to maxBackoff.
+func retryAfterDuration(h http.Header) (time.Duration, bool) {
+	ra := strings.TrimSpace(h.Get("Retry-After"))
+	if ra == "" {
+		return 0, false
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, resp.StatusCode, err
+	if secs, err := strconv.Atoi(ra); err == nil && secs >= 0 {
+		d := time.Duration(secs) * time.Second
+		if d > maxBackoff {
+			d = maxBackoff
+		}
+		return d, true
 	}
-	return data, resp.StatusCode, nil
+	return 0, false
 }
 
 // EnsureLicenseCategory finds a Snipe-IT category of type "license" by name
@@ -288,7 +363,7 @@ func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
 func (c *LicenseClient) ListSeats(licenseID int) ([]LicenseSeat, error) {
 	var out []LicenseSeat
 	offset := 0
-	const limit = 100
+	const limit = 500
 	for {
 		raw, status, err := c.do(http.MethodGet, fmt.Sprintf("/licenses/%d/seats?limit=%d&offset=%d", licenseID, limit, offset), nil)
 		if err != nil {
