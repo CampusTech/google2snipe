@@ -62,7 +62,15 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 	}
 	assetIDBySerial := func(serial string) (int, bool) {
 		assets, err := sc.GetAssetBySerial(serial)
-		if err != nil || len(assets) != 1 {
+		if err != nil {
+			licLog.WithError(err).WithField("serial", serial).Debug("asset lookup failed; skipping license seat")
+			return 0, false
+		}
+		if len(assets) != 1 {
+			if len(assets) > 1 {
+				licLog.WithField("serial", serial).WithField("matches", len(assets)).
+					Warn("duplicate serial in Snipe-IT; skipping license seat (ambiguous asset)")
+			}
 			return 0, false
 		}
 		return assets[0].ID, true
