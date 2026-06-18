@@ -174,7 +174,7 @@ func (c *Client) ListAllAssets() ([]Asset, error) {
 		for _, a := range resp.Rows {
 			out = append(out, fromSnipeAsset(a))
 		}
-		if len(out) >= resp.Total {
+		if len(resp.Rows) == 0 || len(out) >= resp.Total {
 			break
 		}
 		offset += limit
