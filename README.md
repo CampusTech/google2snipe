@@ -13,6 +13,7 @@ A sibling of [`fleet2snipe`](https://github.com/CampusTech/fleet2snipe) and the 
 - **Checkout to the assigned user** — `annotatedUser` first, falling back to the most-recent **managed** login user (domain-restricted), with correct check-in-then-checkout reassignment.
 - **Service-account auth with domain-wide delegation**, via the official `google.golang.org/api/admin/directory/v1` SDK.
 - **`--dry-run`** gated at every mutation (enforced in both the engine *and* the Snipe-IT client), local **cache** for offline dev (`--use-cache`), single-device sync (`--serial` / `--device-id`), structured **logrus** logging.
+- **Concurrent sync with auto-backoff** — devices are processed by a bounded worker pool (`--concurrency`, default 8). The Snipe-IT client automatically retries 429 and transient 5xx responses (honoring `Retry-After`), so it self-throttles rather than failing under concurrency. Set `--concurrency 1` for serial behaviour.
 - **Custom-field rejection retry** — if Snipe-IT rejects a field for being outside the model's fieldset, the offending keys are stripped and the PATCH is retried so the rest of the update still lands.
 - **Distroless Dockerfile** included.
 
@@ -76,7 +77,19 @@ Set credentials via `settings.yaml` or env vars:
 ./google2snipe sync --update-only            # never create new assets, only update
 ./google2snipe sync --use-cache              # replay devices + Snipe users from .cache/ (no list re-fetch)
 ./google2snipe sync --projection basic       # opt down from the default FULL projection
+./google2snipe sync --concurrency 16         # raise worker count (auto-backoff handles 429s)
+./google2snipe sync --concurrency 1          # serial mode (equivalent to serial flag)
 ```
+
+### Concurrency and performance
+
+`sync` processes devices with a bounded worker pool. The default concurrency is **8** and can be tuned via `--concurrency` or `sync.concurrency` in `settings.yaml`.
+
+**First ("cold") run is the slow one.** Every device is new, so every one triggers a Snipe-IT asset create. Subsequent runs skip devices whose `lastSync` hasn't advanced past Snipe-IT's `updated_at` (the freshness check), so they finish much faster.
+
+**Safe to raise `--concurrency`.** All Snipe-IT writes go through automatic retry with exponential backoff. 429 rate-limit responses honor the `Retry-After` header; transient 5xx errors back off and retry transparently. The client self-throttles rather than failing, so increasing concurrency degrades gracefully under load.
+
+**Bulk asset index.** Both `sync` and `licenses sync` load all existing Snipe-IT assets once at startup and build an in-memory serial→asset index. This replaces one API lookup per device with a single paginated list call, which is particularly significant on large inventories.
 
 Persistent flags (all subcommands): `--config <path>` (default `settings.yaml`), `-v/--verbose` (info), `-d/--debug` (debug), `--log-file <path>`, `--log-format text|json`. The default log level is **warn**, so a plain `sync` prints only the run summary and problems; add `--verbose` to see per-device decisions.
 
@@ -252,8 +265,9 @@ See [`settings.example.yaml`](settings.example.yaml) for a fully-commented templ
 google:      # credentials_file, impersonate_subject, customer_id, projection, org_unit_path, query
 snipe_it:    # url, api_key, default_status_id, default_category_id, default_manufacturer_id,
              # custom_fieldset_id, status_map, manufacturer_ids
-sync:        # dry_run, force, rate_limit, update_only, use_cache, cache_dir, set_name, name_template,
-             # asset_tag.template, field_mapping (managed by setup), checkout {...}
+sync:        # dry_run, force, rate_limit, concurrency (default 8; 1=serial), update_only, use_cache,
+             # cache_dir, set_name, name_template, asset_tag.template, field_mapping (managed by setup),
+             # checkout {...}
 licenses:    # enabled, default_license_category_id, chrome {...}, workspace {...}
 ```
 
