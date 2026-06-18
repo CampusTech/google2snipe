@@ -59,6 +59,7 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 	}
 	lc := snipe.NewLicenseClient(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, cfg.Sync.DryRun, licLog)
 	engine := licensesync.New(lc, licLog, licensesync.WithConcurrency(cfg.Sync.Concurrency))
+	scopes := config.EffectiveLicenseScopes(cfg)
 
 	// Chrome license sync needs the device list (cache or fetch) and a
 	// serial→asset index. Workspace-only configs skip all of it so they don't
@@ -67,6 +68,12 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 		devs, err := loadDevices(cmd.Context(), cfg)
 		if err != nil {
 			return err
+		}
+		if len(scopes) > 0 {
+			before := len(devs)
+			devs = inScopeDevices(devs, scopes)
+			licLog.WithFields(logrus.Fields{"scopes": scopes, "kept": len(devs), "of": before}).
+				Info("OU-scoped Chrome devices")
 		}
 		allAssets, err := sc.ListAllAssets(cmd.Context())
 		if err != nil {
@@ -97,6 +104,22 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 		asg, err := loadAssignments(cmd.Context(), cfg, licLog)
 		if err != nil {
 			return err
+		}
+		if len(scopes) > 0 {
+			wsUsers, uerr := loadUsers(cmd.Context(), cfg, googleLog)
+			if uerr != nil {
+				return uerr
+			}
+			ouByEmail := make(map[string]string, len(wsUsers))
+			for _, u := range wsUsers {
+				if u.Email != "" {
+					ouByEmail[strings.ToLower(u.Email)] = u.OrgUnitPath
+				}
+			}
+			before := len(asg)
+			asg = inScopeAssignments(asg, ouByEmail, scopes)
+			licLog.WithFields(logrus.Fields{"scopes": scopes, "kept": len(asg), "of": before}).
+				Info("OU-scoped Workspace assignments")
 		}
 		users, err := newCachingSnipe(sc, cfg.Sync.UseCache, cfg.Sync.CacheDir, snipeLog).ListAllUsers(cmd.Context())
 		if err != nil {
@@ -174,4 +197,60 @@ func loadAssignments(ctx context.Context, cfg *config.Config, logger *logrus.Log
 		_ = os.WriteFile(path, data, 0o600)
 	}
 	return asg, nil
+}
+
+// loadUsers returns Directory users (email + org unit path) for OU filtering,
+// from cache when sync.use_cache is set, else fetched and cached. Mirrors
+// loadAssignments. Only called when OU filtering is active.
+func loadUsers(ctx context.Context, cfg *config.Config, logger *logrus.Logger) ([]google.User, error) {
+	path := filepath.Join(cfg.Sync.CacheDir, "workspace_users.json")
+	if cfg.Sync.UseCache {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read cache: %w", err)
+		}
+		return google.DeserializeUsers(data)
+	}
+	gc, err := google.New(cfg.Google, logger)
+	if err != nil {
+		return nil, err
+	}
+	users, err := gc.ListAllUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if data, err := google.SerializeUsers(users); err == nil {
+		_ = os.MkdirAll(cfg.Sync.CacheDir, 0o755)
+		_ = os.WriteFile(path, data, 0o644)
+	}
+	return users, nil
+}
+
+// inScopeDevices keeps only devices whose OrgUnitPath falls under scopes. Empty
+// scopes keep everything (config.InScope handles that).
+func inScopeDevices(devs []google.Device, scopes []string) []google.Device {
+	out := devs[:0:0]
+	for _, d := range devs {
+		ou := ""
+		if d.ChromeOsDevice != nil {
+			ou = d.OrgUnitPath
+		}
+		if config.InScope(ou, scopes) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// inScopeAssignments keeps only assignments whose user's OU falls under scopes.
+// ouByEmail is keyed by lowercased email; an email absent from it (alias-only,
+// deleted, or external) resolves to "" and is dropped unless scopes is empty.
+func inScopeAssignments(asg []google.LicenseAssignment, ouByEmail map[string]string, scopes []string) []google.LicenseAssignment {
+	out := asg[:0:0]
+	for _, a := range asg {
+		if config.InScope(ouByEmail[strings.ToLower(a.UserEmail)], scopes) {
+			out = append(out, a)
+		}
+	}
+	return out
 }

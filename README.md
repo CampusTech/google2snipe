@@ -354,6 +354,34 @@ After running setup, review the written config and then run `sync`.
 
 `--dry-run` is gated at every Snipe-IT write (same enforcement as the `sync` command). Run from cron alongside `google2snipe sync`.
 
+#### Scoping licenses to Org Units
+
+By default the license sync covers every Workspace user / ChromeOS device the
+API returns. To restrict it to specific Org Units (and their sub-OUs), set:
+
+```yaml
+licenses:
+  org_unit_paths:
+    - /Students          # matches /Students and everything under it
+```
+
+If `licenses.org_unit_paths` is omitted, the global `google.org_unit_path` is
+used; if that is also unset, no OU filtering is applied. Matching is by path
+segment, so `/Students` matches `/Students/Online/Fall 2024` but not
+`/StudentsClub`.
+
+**Workspace OU scoping requires the `admin.directory.user.readonly` scope** (to
+read each user's Org Unit). Add it to `google.scopes` **and** grant it to the
+service account in the Google Admin console (Security → API controls →
+Domain-wide delegation):
+
+```yaml
+google:
+  scopes:
+    - https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly
+    - https://www.googleapis.com/auth/admin.directory.user.readonly
+```
+
 ## Docker
 
 ```sh
