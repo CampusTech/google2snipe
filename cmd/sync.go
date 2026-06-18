@@ -16,13 +16,14 @@ import (
 )
 
 var (
-	syncDryRun     bool
-	syncForce      bool
-	syncSerial     string
-	syncDeviceID   string
-	syncUpdateOnly bool
-	syncUseCache   bool
-	syncProjection string
+	syncDryRun      bool
+	syncForce       bool
+	syncSerial      string
+	syncDeviceID    string
+	syncUpdateOnly  bool
+	syncUseCache    bool
+	syncProjection  string
+	syncConcurrency int
 
 	googleLog = logrus.New()
 	snipeLog  = logrus.New()
@@ -46,6 +47,7 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncUpdateOnly, "update-only", false, "never create, only update")
 	syncCmd.Flags().BoolVar(&syncUseCache, "use-cache", false, "read devices from local cache instead of the API")
 	syncCmd.Flags().StringVar(&syncProjection, "projection", "", "override projection: full|basic")
+	syncCmd.Flags().IntVar(&syncConcurrency, "concurrency", 0, "parallel workers for the Snipe sync (0 = use config default 8)")
 	rootCmd.AddCommand(syncCmd)
 }
 
@@ -64,6 +66,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	if syncProjection != "" {
 		cfg.Google.Projection = syncProjection
+	}
+	if syncConcurrency > 0 {
+		cfg.Sync.Concurrency = syncConcurrency
 	}
 
 	sc, err := snipe.New(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, cfg.Sync.DryRun, cfg.Sync.RateLimit, snipeLog)

@@ -42,3 +42,5 @@ require (
 	google.golang.org/grpc v1.81.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+replace github.com/michellepellon/go-snipeit => github.com/CampusTech/go-snipeit v0.0.0-campustech.0.20260618124802-7089d7170840

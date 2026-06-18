@@ -40,6 +40,7 @@ snipe_it:
 sync:
   dry_run: false
   rate_limit: true              # token-bucket limit on Snipe-IT writes
+  concurrency: 8                # parallel Snipe-IT workers; 1 = serial
   update_only: false
   set_name: false
   name_template: "{annotatedAssetId}"

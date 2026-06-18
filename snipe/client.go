@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -86,11 +88,13 @@ var _ interface {
 	PatchAsset(id int, a Asset) (Asset, error)
 	CheckoutAssetToUser(assetID, userID int) error
 	CheckinAsset(assetID int) error
+	ListAllAssets() ([]Asset, error)
 	ListAllModels() ([]Model, error)
 	CreateModel(m Model) (Model, error)
 	ListAllManufacturers() ([]Manufacturer, error)
 	CreateManufacturer(name string) (Manufacturer, error)
 	ListAllUsers() ([]User, error)
+	ListAllStatusLabels() ([]StatusLabel, error)
 	SetupFields(fieldsetIDs []int, fields []FieldDef) (map[string]string, error)
 	Ping() (string, error)
 } = (*Client)(nil)
@@ -122,7 +126,10 @@ func New(url, apiKey string, dryRun, rateLimit bool, logger *logrus.Logger) (*Cl
 	}
 	baseURL := strings.TrimRight(url, "/")
 
-	opts := &snipeit.ClientOptions{Logger: &snipeLogger{logger: logger}}
+	opts := &snipeit.ClientOptions{
+		Logger:         &snipeLogger{logger: logger},
+		DisableRetries: true, // retry429 handles retries at our layer
+	}
 	if rateLimit {
 		opts.RateLimiter = snipeit.NewTokenBucketRateLimiter(2, 5)
 	}
@@ -132,6 +139,52 @@ func New(url, apiKey string, dryRun, rateLimit bool, logger *logrus.Logger) (*Cl
 		return nil, fmt.Errorf("creating snipe-it client: %w", err)
 	}
 	return &Client{sc: sc, dryRun: dryRun, logger: logger}, nil
+}
+
+// retry429 runs fn and retries transient failures — HTTP 429 (honoring
+// Retry-After), HTTP 5xx, and network/connection errors — with backoff
+// (Retry-After when present and non-negative, else exponential from 500 ms ×2
+// capped at 30 s), up to 6 attempts total. Context cancellation/deadline and
+// any non-transient (e.g. 4xx) error are returned immediately. go-snipeit's own
+// retry policy is disabled (see New's DisableRetries) so this layer owns all
+// retry behavior — replacing the SDK's 429+5xx+connection retries.
+func (c *Client) retry429(op string, fn func() (*http.Response, error)) error {
+	const maxAttempts = 6
+	backoff := 500 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		resp, err := fn()
+		retryable := false
+		switch {
+		case resp != nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500):
+			retryable = true
+		case resp == nil && err != nil &&
+			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded):
+			retryable = true // transient network/connection error
+		}
+		if !retryable {
+			return err
+		}
+		if attempt >= maxAttempts {
+			if err != nil {
+				return fmt.Errorf("%s: failed after %d attempts: %w", op, maxAttempts, err)
+			}
+			return fmt.Errorf("%s: failed after %d attempts (HTTP %d)", op, maxAttempts, resp.StatusCode)
+		}
+		wait := backoff
+		if resp != nil {
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if secs, perr := strconv.Atoi(strings.TrimSpace(ra)); perr == nil && secs >= 0 {
+					wait = time.Duration(secs) * time.Second
+				}
+			}
+		}
+		c.logger.WithFields(logrus.Fields{"op": op, "attempt": attempt, "wait": wait.String()}).
+			Warn("snipe request failed (429/5xx/transient); backing off")
+		time.Sleep(wait)
+		if backoff *= 2; backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
+	}
 }
 
 // Ping fetches one record to verify the API key works and returns a short
@@ -147,7 +200,12 @@ func (c *Client) Ping() (string, error) {
 // GetAssetBySerial looks up assets by serial. Snipe's /byserial endpoint does a
 // partial search, so this filters to exact case-insensitive matches.
 func (c *Client) GetAssetBySerial(serial string) ([]Asset, error) {
-	resp, _, err := c.sc.Assets.GetAssetBySerialContext(context.Background(), serial)
+	var resp *snipeit.AssetsResponse
+	err := c.retry429("get asset by serial", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Assets.GetAssetBySerialContext(context.Background(), serial)
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return nil, fmt.Errorf("looking up serial %s: %w", serial, err)
 	}
@@ -156,6 +214,33 @@ func (c *Client) GetAssetBySerial(serial string) ([]Asset, error) {
 		if strings.EqualFold(a.Serial, serial) {
 			out = append(out, fromSnipeAsset(a))
 		}
+	}
+	return out, nil
+}
+
+// ListAllAssets pages through every hardware asset in Snipe-IT and returns them
+// all mapped to the local Asset type.
+func (c *Client) ListAllAssets() ([]Asset, error) {
+	var out []Asset
+	offset := 0
+	const limit = 500
+	for {
+		var resp *snipeit.AssetsResponse
+		err := c.retry429("list assets", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Assets.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+			resp = r
+			return httpResp, e
+		})
+		if err != nil {
+			return nil, fmt.Errorf("listing assets: %w", err)
+		}
+		for _, a := range resp.Rows {
+			out = append(out, fromSnipeAsset(a))
+		}
+		if len(resp.Rows) == 0 || len(out) >= resp.Total {
+			break
+		}
+		offset += limit
 	}
 	return out, nil
 }
@@ -171,7 +256,12 @@ func (c *Client) CreateAsset(a Asset) (Asset, error) {
 		return Asset{}, ErrDryRun
 	}
 	sa := toSnipeAsset(a)
-	resp, _, err := c.sc.Assets.CreateContext(context.Background(), sa)
+	var resp *snipeit.AssetCreateResponse
+	err := c.retry429("create asset", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Assets.CreateContext(context.Background(), sa)
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return Asset{}, fmt.Errorf("creating asset: %w", err)
 	}
@@ -196,7 +286,11 @@ func (c *Client) CreateAsset(a Asset) (Asset, error) {
 			delete(cleaned, k)
 		}
 		sa.CustomFields = cleaned
-		resp, _, err = c.sc.Assets.CreateContext(context.Background(), sa)
+		err = c.retry429("create asset (field retry)", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Assets.CreateContext(context.Background(), sa)
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return Asset{}, fmt.Errorf("creating asset (retry): %w", err)
 		}
@@ -217,7 +311,12 @@ func (c *Client) PatchAsset(id int, a Asset) (Asset, error) {
 		return Asset{}, ErrDryRun
 	}
 	sa := toSnipeAsset(a)
-	resp, _, err := c.sc.Assets.PatchContext(context.Background(), id, sa)
+	var resp *snipeit.AssetCreateResponse
+	err := c.retry429("patch asset", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Assets.PatchContext(context.Background(), id, sa)
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return Asset{}, fmt.Errorf("updating asset %d: %w", id, err)
 	}
@@ -242,7 +341,11 @@ func (c *Client) PatchAsset(id int, a Asset) (Asset, error) {
 			delete(cleaned, k)
 		}
 		sa.CustomFields = cleaned
-		resp, _, err = c.sc.Assets.PatchContext(context.Background(), id, sa)
+		err = c.retry429("patch asset (field retry)", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Assets.PatchContext(context.Background(), id, sa)
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return Asset{}, fmt.Errorf("updating asset %d (retry): %w", id, err)
 		}
@@ -264,7 +367,12 @@ func (c *Client) CheckoutAssetToUser(assetID, userID int) error {
 		"checkout_to_type": "user",
 		"assigned_user":    userID,
 	}
-	resp, _, err := c.sc.Assets.CheckoutContext(context.Background(), assetID, body)
+	var resp *snipeit.AssetCreateResponse
+	err := c.retry429("checkout asset", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Assets.CheckoutContext(context.Background(), assetID, body)
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return fmt.Errorf("checking out asset %d to user %d: %w", assetID, userID, err)
 	}
@@ -281,13 +389,20 @@ func (c *Client) CheckinAsset(assetID int) error {
 	if c.dryRun {
 		return ErrDryRun
 	}
-	resp, httpResp, err := c.sc.Assets.CheckinContext(context.Background(), assetID, map[string]any{})
+	var resp *snipeit.AssetCreateResponse
+	var savedHTTPResp *http.Response
+	err := c.retry429("checkin asset", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Assets.CheckinContext(context.Background(), assetID, map[string]any{})
+		resp = r
+		savedHTTPResp = httpResp
+		return httpResp, e
+	})
 	if err != nil {
 		// go-snipeit types the checkin response's payload.model as an object,
 		// but Snipe-IT returns it as a string, so the SUCCESS body fails to
 		// unmarshal. If the HTTP call returned 2xx, the check-in happened
 		// server-side — treat a body-parse error as success.
-		if httpResp != nil && httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 &&
+		if savedHTTPResp != nil && savedHTTPResp.StatusCode >= 200 && savedHTTPResp.StatusCode < 300 &&
 			strings.Contains(err.Error(), "unmarshal") {
 			return nil
 		}
@@ -310,7 +425,12 @@ func (c *Client) ListAllModels() ([]Model, error) {
 	offset := 0
 	const limit = 500
 	for {
-		resp, _, err := c.sc.Models.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		var resp *snipeit.ModelsResponse
+		err := c.retry429("list models", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Models.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing models: %w", err)
 		}
@@ -330,7 +450,12 @@ func (c *Client) CreateModel(m Model) (Model, error) {
 	if c.dryRun {
 		return Model{}, ErrDryRun
 	}
-	resp, _, err := c.sc.Models.CreateContext(context.Background(), toSnipeModel(m))
+	var resp *snipeit.ModelResponse
+	err := c.retry429("create model", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Models.CreateContext(context.Background(), toSnipeModel(m))
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return Model{}, fmt.Errorf("creating model: %w", err)
 	}
@@ -346,7 +471,12 @@ func (c *Client) ListAllManufacturers() ([]Manufacturer, error) {
 	offset := 0
 	const limit = 500
 	for {
-		resp, _, err := c.sc.Manufacturers.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		var resp *snipeit.ManufacturersResponse
+		err := c.retry429("list manufacturers", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Manufacturers.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing manufacturers: %w", err)
 		}
@@ -373,7 +503,12 @@ func (c *Client) ListAllStatusLabels() ([]StatusLabel, error) {
 	offset := 0
 	const limit = 500
 	for {
-		resp, _, err := c.sc.StatusLabels.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		var resp *snipeit.StatusLabelsResponse
+		err := c.retry429("list status labels", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.StatusLabels.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing status labels: %w", err)
 		}
@@ -395,7 +530,12 @@ func (c *Client) CreateManufacturer(name string) (Manufacturer, error) {
 	}
 	m := snipeit.Manufacturer{}
 	m.Name = name
-	resp, _, err := c.sc.Manufacturers.CreateContext(context.Background(), m)
+	var resp *snipeit.ManufacturerResponse
+	err := c.retry429("create manufacturer", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Manufacturers.CreateContext(context.Background(), m)
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return Manufacturer{}, fmt.Errorf("creating manufacturer: %w", err)
 	}
@@ -411,7 +551,12 @@ func (c *Client) ListAllUsers() ([]User, error) {
 	offset := 0
 	const limit = 500
 	for {
-		resp, _, err := c.sc.Users.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		var resp *snipeit.UsersResponse
+		err := c.retry429("list users", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Users.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing users: %w", err)
 		}
@@ -561,8 +706,10 @@ func toSnipeAsset(a Asset) snipeit.Asset {
 	sa.Model.ID = a.ModelID
 	sa.StatusLabel.ID = a.StatusID
 	if a.AssignedToID != 0 {
-		sa.User = &snipeit.FlexUser{}
-		sa.User.User.ID = a.AssignedToID
+		// Snipe-IT honors assigned_user + checkout_to_type on writes to check the
+		// asset out (the assigned_to object is output-only and ignored on write).
+		sa.AssignedUser = a.AssignedToID
+		sa.CheckoutToType = "user"
 	}
 	if len(a.CustomFields) > 0 {
 		sa.CustomFields = a.CustomFields

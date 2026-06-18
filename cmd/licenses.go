@@ -60,28 +60,37 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 	lc := snipe.NewLicenseClient(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, cfg.Sync.DryRun, licLog)
 	engine := licensesync.New(lc, licLog)
 
-	// devices (cache or fetch) — reuse the sync command's loader
-	devs, err := loadDevices(cmd.Context(), cfg)
-	if err != nil {
-		return err
-	}
-	assetIDBySerial := func(serial string) (int, bool) {
-		assets, err := sc.GetAssetBySerial(serial)
+	// Chrome license sync needs the device list (cache or fetch) and a
+	// serial→asset index. Workspace-only configs skip all of it so they don't
+	// hard-depend on listing every hardware asset in Snipe-IT.
+	if len(cfg.Licenses.Chrome) > 0 {
+		devs, err := loadDevices(cmd.Context(), cfg)
 		if err != nil {
-			licLog.WithError(err).WithField("serial", serial).Debug("asset lookup failed; skipping license seat")
-			return 0, false
+			return err
 		}
-		if len(assets) != 1 {
-			if len(assets) > 1 {
-				licLog.WithField("serial", serial).WithField("matches", len(assets)).
-					Warn("duplicate serial in Snipe-IT; skipping license seat (ambiguous asset)")
+		allAssets, err := sc.ListAllAssets()
+		if err != nil {
+			return err
+		}
+		assetIdx := make(map[string]int, len(allAssets))
+		for _, a := range allAssets {
+			if a.Serial == "" {
+				continue
 			}
-			return 0, false
+			key := strings.ToLower(a.Serial)
+			if _, dup := assetIdx[key]; dup {
+				licLog.WithField("serial", a.Serial).Warn("duplicate serial in Snipe-IT; keeping first (ambiguous asset)")
+				continue
+			}
+			assetIdx[key] = a.ID
 		}
-		return assets[0].ID, true
-	}
-	if err := engine.SyncChrome(cfg.Licenses, devs, assetIDBySerial); err != nil {
-		return err
+		assetIDBySerial := func(serial string) (int, bool) {
+			id, ok := assetIdx[strings.ToLower(serial)]
+			return id, ok
+		}
+		if err := engine.SyncChrome(cfg.Licenses, devs, assetIDBySerial); err != nil {
+			return err
+		}
 	}
 
 	if len(cfg.Licenses.Workspace.Products) > 0 {

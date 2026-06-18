@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -332,6 +333,33 @@ func TestSyncDeviceDryRunNoMutators(t *testing.T) {
 	}
 }
 
+func TestSyncUsesAssetIndexForExisting(t *testing.T) {
+	stub := &stubSnipe{
+		bySerial: map[string][]snipe.Asset{
+			"ABC": {{ID: 9, Serial: "ABC", ModelID: 1, StatusID: 1, CustomFields: map[string]string{}}},
+		},
+	}
+	cfg := baseCfg()
+	cfg.Sync.Force = true // skip freshness gate so the update always proceeds
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+	// Confirm index was populated from bySerial via ListAllAssets
+	if _, found := e.assetIndex["abc"]; !found {
+		t.Fatal("assetIndex should contain 'abc' after Warm")
+	}
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+		SerialNumber: "ABC", Status: "ACTIVE", Model: "Acer Chromebook 311",
+	}))
+	if len(stub.created) != 0 {
+		t.Errorf("expected update via index, but a create happened: %+v", stub.created)
+	}
+	if _, ok := stub.patched[9]; !ok {
+		t.Errorf("expected asset 9 to be patched via the index, patched=%v", stub.patched)
+	}
+}
+
 func TestApplyCheckoutSkipsNonDeployableStatus(t *testing.T) {
 	cfg := baseCfg() // DefaultStatusID = 1
 	cfg.SnipeIT.StatusMap = map[string]int{"DISABLED": 9}
@@ -359,18 +387,51 @@ func TestApplyCheckoutSkipsNonDeployableStatus(t *testing.T) {
 		t.Errorf("non-deployable device must not be checked out, got %v", stub.checkouts)
 	}
 
-	// ACTIVE -> default status 1 (deployable) -> IS checked out.
-	stub.checkouts = nil
+	// ACTIVE -> default status 1 (deployable) -> checked out AT CREATE
+	// (AssignedToID on the create, not a separate checkout call).
 	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
 		SerialNumber: "D2", Status: "ACTIVE", Model: "Acer Chromebook 311", AnnotatedUser: "owner@example.com",
 	}))
 	found := false
-	for _, uid := range stub.checkouts {
-		if uid == 10 {
+	for _, a := range stub.created {
+		if a.Serial == "D2" && a.AssignedToID == 10 {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("deployable device should be checked out to user 10, got %v", stub.checkouts)
+		t.Errorf("deployable device should be checked out to user 10 at create, got created=%v", stub.created)
+	}
+	if len(stub.checkouts) != 0 {
+		t.Errorf("checkout-at-create should make no separate checkout call, got %v", stub.checkouts)
+	}
+}
+
+func TestSyncAllConcurrentNoRace(t *testing.T) {
+	stub := &stubSnipe{
+		bySerial:     map[string][]snipe.Asset{},
+		statusLabels: []snipe.StatusLabel{{ID: 2, Type: "deployable"}},
+	}
+	cfg := baseCfg()
+	cfg.Sync.Concurrency = 8
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+	var devs []google.Device
+	for i := 0; i < 200; i++ {
+		devs = append(devs, dev(t, &admin.ChromeOsDevice{
+			SerialNumber: fmt.Sprintf("S%03d", i),
+			Status:       "ACTIVE",
+		}))
+	}
+	st := e.SyncAll(devs)
+	if st.Created != 200 {
+		t.Fatalf("Created = %d, want 200", st.Created)
+	}
+	// All 200 devices resolve to the same model name, so correct double-checked
+	// locking must create it exactly once (a missing second cache-check would
+	// double-create under the lock — a logic bug -race cannot catch).
+	if len(stub.models) != 1 {
+		t.Fatalf("model created %d times, want 1 (concurrent ensureModel de-dup)", len(stub.models))
 	}
 }
