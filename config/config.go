@@ -11,9 +11,10 @@ import (
 
 // Config is the top-level YAML config. See Shared Type Reference in the plan.
 type Config struct {
-	Google  GoogleConfig  `yaml:"google"`
-	SnipeIT SnipeITConfig `yaml:"snipe_it"`
-	Sync    SyncConfig    `yaml:"sync"`
+	Google   GoogleConfig   `yaml:"google"`
+	SnipeIT  SnipeITConfig  `yaml:"snipe_it"`
+	Sync     SyncConfig     `yaml:"sync"`
+	Licenses LicensesConfig `yaml:"licenses"`
 }
 
 type GoogleConfig struct {
@@ -84,6 +85,39 @@ type CheckoutConfig struct {
 	RecentUserDomain string `yaml:"recent_user_domain"`
 	MatchField       string `yaml:"match_field"`
 	Mode             string `yaml:"mode"`
+}
+
+type LicensesConfig struct {
+	Enabled                  bool                           `yaml:"enabled"`
+	DefaultLicenseCategoryID int                            `yaml:"default_license_category_id"`
+	Chrome                   map[string]ChromeLicenseConfig `yaml:"chrome"`
+	Workspace                WorkspaceLicenseConfig         `yaml:"workspace"`
+}
+
+type ChromeLicenseConfig struct {
+	Name         string  `yaml:"name"`
+	Cost         float64 `yaml:"cost"`
+	Reassignable *bool   `yaml:"reassignable"`
+	TermMonths   int     `yaml:"term_months"`
+}
+
+type WorkspaceLicenseConfig struct {
+	CustomerID string             `yaml:"customer_id"`
+	Products   []string           `yaml:"products"`
+	SKUCosts   map[string]float64 `yaml:"sku_costs"`
+}
+
+// ChromePerpetual reports whether a ChromeOS deviceLicenseType is a perpetual
+// (non-reassignable) upgrade. Recurring = fixed-term or annual.
+func ChromePerpetual(deviceLicenseType string) bool {
+	if strings.Contains(strings.ToLower(deviceLicenseType), "fixedterm") {
+		return false
+	}
+	switch deviceLicenseType {
+	case "enterpriseUpgrade", "kioskUpgrade": // deprecated-annual / kiosk-annual
+		return false
+	}
+	return true
 }
 
 // KnownTransforms is the set of transform names accepted in field_mapping.
@@ -214,6 +248,9 @@ func (c *Config) Validate() error {
 	case "assign", "sync", "force":
 	default:
 		return fmt.Errorf("checkout.mode must be assign|sync|force, got %q", c.Sync.Checkout.Mode)
+	}
+	if c.Licenses.Enabled && c.Licenses.DefaultLicenseCategoryID == 0 {
+		return fmt.Errorf("licenses.default_license_category_id is required when licenses.enabled")
 	}
 	return nil
 }
