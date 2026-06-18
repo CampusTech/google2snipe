@@ -62,6 +62,16 @@ type snipeResp struct {
 	Payload  json.RawMessage `json:"payload"`
 }
 
+// check2xx returns a descriptive error for non-2xx responses, including the body,
+// so an auth/rate-limit/validation failure (401/429/422) is not lost as an opaque
+// JSON-unmarshal error.
+func check2xx(status int, raw []byte, what string) error {
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("%s: HTTP %d: %s", what, status, strings.TrimSpace(string(raw)))
+	}
+	return nil
+}
+
 // do issues an authenticated request to /api/v1<path> and returns the raw body, so
 // list ({total,rows}) and mutation ({status,payload}) callers each decode what they need.
 // Mutating callers must check c.dryRun BEFORE calling do.
@@ -100,8 +110,11 @@ func (c *LicenseClient) ListLicenses() ([]License, error) {
 	offset := 0
 	const limit = 100
 	for {
-		raw, _, err := c.do(http.MethodGet, fmt.Sprintf("/licenses?limit=%d&offset=%d", limit, offset), nil)
+		raw, status, err := c.do(http.MethodGet, fmt.Sprintf("/licenses?limit=%d&offset=%d", limit, offset), nil)
 		if err != nil {
+			return nil, err
+		}
+		if err := check2xx(status, raw, "listing licenses"); err != nil {
 			return nil, err
 		}
 		var page struct {
@@ -151,8 +164,11 @@ func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
 	if spec.ExpirationDate != "" {
 		body["expiration_date"] = spec.ExpirationDate
 	}
-	raw, _, err := c.do(http.MethodPost, "/licenses", body)
+	raw, status, err := c.do(http.MethodPost, "/licenses", body)
 	if err != nil {
+		return License{}, err
+	}
+	if err := check2xx(status, raw, fmt.Sprintf("creating license %q", spec.Name)); err != nil {
 		return License{}, err
 	}
 	var r snipeResp
@@ -167,7 +183,9 @@ func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
 		Name  string `json:"name"`
 		Seats int    `json:"seats"`
 	}
-	_ = json.Unmarshal(r.Payload, &p)
+	if err := json.Unmarshal(r.Payload, &p); err != nil {
+		return License{}, fmt.Errorf("parsing created license %q: %w", spec.Name, err)
+	}
 	return License{ID: p.ID, Name: p.Name, Seats: p.Seats}, nil
 }
 
@@ -176,12 +194,17 @@ func (c *LicenseClient) EnsureSeats(licenseID, total int) error {
 	if c.dryRun {
 		return ErrDryRun
 	}
-	raw, _, err := c.do(http.MethodPatch, fmt.Sprintf("/licenses/%d", licenseID), map[string]any{"seats": total})
+	raw, status, err := c.do(http.MethodPatch, fmt.Sprintf("/licenses/%d", licenseID), map[string]any{"seats": total})
 	if err != nil {
 		return err
 	}
+	if err := check2xx(status, raw, fmt.Sprintf("growing license %d seats to %d", licenseID, total)); err != nil {
+		return err
+	}
 	var r snipeResp
-	_ = json.Unmarshal(raw, &r)
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return fmt.Errorf("growing license %d seats to %d: %w", licenseID, total, err)
+	}
 	if r.Status != "success" {
 		return fmt.Errorf("growing license %d seats to %d: %s", licenseID, total, string(r.Messages))
 	}
