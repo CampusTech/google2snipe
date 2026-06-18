@@ -20,11 +20,22 @@ func EffectiveLicenseScopes(cfg *Config) []string {
 // OU exactly and any descendant on a path-segment boundary, so "/Students" matches
 // "/Students" and "/Students/Online/Fall 2024" but not "/StudentsClub". The root
 // scope "/" matches every OU; to scope to everything else, leave the list empty.
+//
+// Each scope is trimmed of surrounding whitespace and a trailing slash; a blank
+// (or whitespace-/slash-only) entry is skipped rather than treated as a wildcard,
+// so a stray empty item in config can't silently disable filtering.
 func InScope(ou string, scopes []string) bool {
 	if len(scopes) == 0 {
 		return true
 	}
 	for _, s := range scopes {
+		s = strings.TrimSpace(s)
+		if s != "/" {
+			s = strings.TrimRight(s, "/")
+		}
+		if s == "" {
+			continue
+		}
 		if s == "/" || ou == s || strings.HasPrefix(ou, s+"/") {
 			return true
 		}

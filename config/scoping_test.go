@@ -21,6 +21,9 @@ func TestInScope(t *testing.T) {
 		{"second scope matches", "/Faculty/Adjuncts", []string{"/Students", "/Faculty"}, true},
 		{"root scope matches all", "/Students/HS", []string{"/"}, true},
 		{"empty ou not in a real scope", "", []string{"/Students"}, false},
+		{"blank scope entry does not match", "/Students", []string{""}, false},
+		{"whitespace scope entry does not match", "/Students", []string{"   "}, false},
+		{"trailing slash is normalized", "/Students/HS", []string{"/Students/"}, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
