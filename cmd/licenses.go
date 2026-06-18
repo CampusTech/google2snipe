@@ -73,7 +73,7 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 			before := len(devs)
 			devs = inScopeDevices(devs, scopes)
 			licLog.WithFields(logrus.Fields{"scopes": scopes, "kept": len(devs), "of": before}).
-				Info("OU-scoped Chrome devices")
+				Warn("OU-scoped Chrome devices")
 		}
 		allAssets, err := sc.ListAllAssets(cmd.Context())
 		if err != nil {
@@ -119,7 +119,7 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 			before := len(asg)
 			asg = inScopeAssignments(asg, ouByEmail, scopes)
 			licLog.WithFields(logrus.Fields{"scopes": scopes, "kept": len(asg), "of": before}).
-				Info("OU-scoped Workspace assignments")
+				Warn("OU-scoped Workspace assignments")
 		}
 		users, err := newCachingSnipe(sc, cfg.Sync.UseCache, cfg.Sync.CacheDir, snipeLog).ListAllUsers(cmd.Context())
 		if err != nil {
@@ -206,10 +206,14 @@ func loadUsers(ctx context.Context, cfg *config.Config, logger *logrus.Logger) (
 	path := filepath.Join(cfg.Sync.CacheDir, "workspace_users.json")
 	if cfg.Sync.UseCache {
 		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read cache: %w", err)
+		switch {
+		case err == nil:
+			return google.DeserializeUsers(data)
+		case os.IsNotExist(err):
+			// expected on first run; fall through to a live fetch
+		default:
+			logger.WithError(err).WithField("path", path).Warn("workspace users cache unreadable; fetching live")
 		}
-		return google.DeserializeUsers(data)
 	}
 	gc, err := google.New(cfg.Google, logger)
 	if err != nil {
@@ -221,7 +225,7 @@ func loadUsers(ctx context.Context, cfg *config.Config, logger *logrus.Logger) (
 	}
 	if data, err := google.SerializeUsers(users); err == nil {
 		_ = os.MkdirAll(cfg.Sync.CacheDir, 0o755)
-		_ = os.WriteFile(path, data, 0o644)
+		_ = os.WriteFile(path, data, 0o600)
 	}
 	return users, nil
 }
