@@ -1,12 +1,17 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 
 	"github.com/CampusTech/google2snipe/config"
+	"github.com/CampusTech/google2snipe/google"
 	"github.com/CampusTech/google2snipe/licensesync"
 	"github.com/CampusTech/google2snipe/snipe"
 )
@@ -78,6 +83,59 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 	if err := engine.SyncChrome(cfg.Licenses, devs, assetIDBySerial); err != nil {
 		return err
 	}
+
+	if len(cfg.Licenses.Workspace.Products) > 0 {
+		gl, err := google.NewLicensingClient(cfg.Google, cfg.Licenses.Workspace.CustomerID, licLog)
+		if err != nil {
+			return err
+		}
+		asg, err := loadAssignments(cmd.Context(), cfg, gl)
+		if err != nil {
+			return err
+		}
+		// reuse the sync engine's Warm user index via a fresh engine, or load users directly:
+		users, err := newCachingSnipe(sc, cfg.Sync.UseCache, cfg.Sync.CacheDir, snipeLog).ListAllUsers()
+		if err != nil {
+			return err
+		}
+		idx := map[string]int{}
+		for _, u := range users {
+			if u.Email != "" {
+				idx[strings.ToLower(u.Email)] = u.ID
+			}
+		}
+		userIDByEmail := func(email string) (int, bool) {
+			id, ok := idx[strings.ToLower(email)]
+			if !ok {
+				if i := strings.IndexByte(strings.ToLower(email), '@'); i > 0 {
+					id, ok = idx[strings.ToLower(email)[:i]]
+				}
+			}
+			return id, ok
+		}
+		if err := engine.SyncWorkspace(cfg.Licenses, asg, userIDByEmail); err != nil {
+			return err
+		}
+	}
+
 	licLog.Warn("license sync complete")
 	return nil
+}
+
+func loadAssignments(ctx context.Context, cfg *config.Config, gl *google.LicensingClient) ([]google.LicenseAssignment, error) {
+	path := filepath.Join(cfg.Sync.CacheDir, "license_assignments.json")
+	if cfg.Sync.UseCache {
+		if data, err := os.ReadFile(path); err == nil {
+			return google.DeserializeAssignments(data)
+		}
+	}
+	asg, err := gl.ListAssignments(ctx, cfg.Licenses.Workspace.Products)
+	if err != nil {
+		return nil, err
+	}
+	if data, err := google.SerializeAssignments(asg); err == nil {
+		_ = os.MkdirAll(cfg.Sync.CacheDir, 0o755)
+		_ = os.WriteFile(path, data, 0o644)
+	}
+	return asg, nil
 }
