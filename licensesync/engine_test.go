@@ -1,6 +1,7 @@
 package licensesync
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -177,5 +178,46 @@ func TestReconcileDedupsDuplicateHolders(t *testing.T) {
 	}
 	if st.CheckedOut != 1 {
 		t.Errorf("CheckedOut = %d, want 1", st.CheckedOut)
+	}
+}
+
+func TestReconcileReclaimsDuplicateSeats(t *testing.T) {
+	stub := &stubLC{
+		lic:      snipe.License{ID: 1, Name: "X", Seats: 2},
+		seats:    []snipe.LicenseSeat{{ID: 1, AssignedUserID: 10}, {ID: 2, AssignedUserID: 10}},
+		nextSeat: 2,
+	}
+	e := New(stub, logrus.New())
+	st, err := e.Reconcile(snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 2},
+		[]Target{{IsUser: true, ID: 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := 0
+	for _, s := range stub.seats {
+		if s.AssignedUserID == 10 {
+			held++
+		}
+	}
+	if held != 1 {
+		t.Errorf("user 10 holds %d seats, want 1 (duplicate reclaimed)", held)
+	}
+	if st.CheckedIn != 1 {
+		t.Errorf("CheckedIn = %d, want 1", st.CheckedIn)
+	}
+}
+
+type failCheckoutStub struct{ stubLC }
+
+func (s *failCheckoutStub) CheckoutSeatToUser(licenseID, seatID, userID int) error {
+	return errors.New("boom")
+}
+
+func TestReconcileReturnsErrorOnRealCheckoutFailure(t *testing.T) {
+	e := New(&failCheckoutStub{}, logrus.New())
+	_, err := e.Reconcile(snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 1},
+		[]Target{{IsUser: true, ID: 10}})
+	if err == nil {
+		t.Fatal("expected reconcile to return the real checkout failure, got nil")
 	}
 }

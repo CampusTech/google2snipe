@@ -126,8 +126,8 @@ A new cobra group keeps these distinct from the device `sync`/`setup`/`test`.
 1. **Discover Chrome upgrade types** from device data (cache or fetch): distinct
    `deviceLicenseType` + device counts.
 2. **Discover Workspace SKUs**: probe each candidate product via
-   `licenseAssignments.listForProduct`; collect distinct `(productId, skuId,
-   skuName)` + user counts.
+   `licenseAssignments.listForProduct`; collect assignments for the supported
+   Workspace products in the candidate catalog.
 3. **Auto-classify** each (perpetual vs recurring; `reassignable`).
 4. **Quiz** the operator per license, showing kind + count, reading a price from
    stdin (blank = 0):

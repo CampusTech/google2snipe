@@ -2,6 +2,7 @@ package licensesync
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/sirupsen/logrus"
 
@@ -93,42 +94,86 @@ func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, err
 	if err != nil {
 		return st, err
 	}
-	curUser := map[int]int{}  // userID -> seatID
-	curAsset := map[int]int{} // assetID -> seatID
+	curUser := map[int][]int{}  // userID -> seatIDs (handles pre-existing duplicate seats)
+	curAsset := map[int][]int{} // assetID -> seatIDs
 	var free []int
 	for _, s := range seats {
 		switch {
 		case s.AssignedUserID != 0:
-			curUser[s.AssignedUserID] = s.ID
+			curUser[s.AssignedUserID] = append(curUser[s.AssignedUserID], s.ID)
 		case s.AssignedAssetID != 0:
-			curAsset[s.AssignedAssetID] = s.ID
+			curAsset[s.AssignedAssetID] = append(curAsset[s.AssignedAssetID], s.ID)
 		default:
 			free = append(free, s.ID)
 		}
 	}
 
-	// 1) Reassignable: check stale holders in first, freeing their seats for reuse.
+	var firstErr error
+	recordErr := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	// checkin returns true if the seat is now free (real success or dry-run no-op).
+	checkin := func(seatID int) bool {
+		if err := e.lc.CheckinSeat(lic.ID, seatID); err != nil && !isDryRun(err) {
+			e.log.WithError(err).WithField("seat", seatID).Warn("seat checkin failed")
+			recordErr(err)
+			return false
+		}
+		st.CheckedIn++
+		return true
+	}
+
+	// 1) Reassignable: reclaim stale holders' seats, and reclaim duplicate seats of a
+	//    wanted holder (keep exactly one), freeing them for reuse. Perpetual never reclaims.
 	if spec.Reassignable {
-		for uid, seatID := range curUser {
+		for uid, seatIDs := range curUser {
 			if !wantUser[uid] {
-				if err := e.lc.CheckinSeat(lic.ID, seatID); err != nil && !isDryRun(err) {
-					e.log.WithError(err).WithField("seat", seatID).Warn("seat checkin failed")
-					continue
+				var kept []int
+				for _, seatID := range seatIDs {
+					if checkin(seatID) {
+						free = append(free, seatID)
+					} else {
+						kept = append(kept, seatID)
+					}
 				}
-				delete(curUser, uid)
-				free = append(free, seatID)
-				st.CheckedIn++
+				if len(kept) == 0 {
+					delete(curUser, uid)
+				} else {
+					curUser[uid] = kept
+				}
+			} else if len(seatIDs) > 1 {
+				for _, seatID := range seatIDs[1:] {
+					if checkin(seatID) {
+						free = append(free, seatID)
+					}
+				}
+				curUser[uid] = seatIDs[:1]
 			}
 		}
-		for aid, seatID := range curAsset {
+		for aid, seatIDs := range curAsset {
 			if !wantAsset[aid] {
-				if err := e.lc.CheckinSeat(lic.ID, seatID); err != nil && !isDryRun(err) {
-					e.log.WithError(err).WithField("seat", seatID).Warn("seat checkin failed")
-					continue
+				var kept []int
+				for _, seatID := range seatIDs {
+					if checkin(seatID) {
+						free = append(free, seatID)
+					} else {
+						kept = append(kept, seatID)
+					}
 				}
-				delete(curAsset, aid)
-				free = append(free, seatID)
-				st.CheckedIn++
+				if len(kept) == 0 {
+					delete(curAsset, aid)
+				} else {
+					curAsset[aid] = kept
+				}
+			} else if len(seatIDs) > 1 {
+				for _, seatID := range seatIDs[1:] {
+					if checkin(seatID) {
+						free = append(free, seatID)
+					}
+				}
+				curAsset[aid] = seatIDs[:1]
 			}
 		}
 	}
@@ -136,22 +181,21 @@ func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, err
 	// 2) Determine holders that still need a seat.
 	var need []Target
 	for _, t := range desired {
+		has := false
 		if t.IsUser {
-			if _, ok := curUser[t.ID]; ok {
-				st.AlreadyOK++
-			} else {
-				need = append(need, t)
-			}
+			has = len(curUser[t.ID]) > 0
 		} else {
-			if _, ok := curAsset[t.ID]; ok {
-				st.AlreadyOK++
-			} else {
-				need = append(need, t)
-			}
+			has = len(curAsset[t.ID]) > 0
+		}
+		if has {
+			st.AlreadyOK++
+		} else {
+			need = append(need, t)
 		}
 	}
 
 	// 3) Grow seats if there aren't enough free ones, then re-list to learn new seat IDs.
+	growthDryRun := false
 	if len(need) > len(free) {
 		newTotal := len(seats) + (len(need) - len(free))
 		switch err := e.lc.EnsureSeats(lic.ID, newTotal); {
@@ -167,7 +211,7 @@ func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, err
 				}
 			}
 		case isDryRun(err):
-			// no real seats allocated in dry-run; the checkout loop counts the intent.
+			growthDryRun = true
 		default:
 			return st, err
 		}
@@ -176,10 +220,15 @@ func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, err
 	// 4) Check out the holders that need a seat.
 	for _, t := range need {
 		if len(free) == 0 {
-			// dry-run with no allocatable seat: record the intended checkout.
-			e.log.WithField("license", lic.Name).WithField("holder", t.ID).
-				Warn("[dry-run] would add a seat and check out holder")
-			st.CheckedOut++
+			if growthDryRun {
+				e.log.WithField("license", lic.Name).WithField("holder", t.ID).
+					Warn("[dry-run] would add a seat and check out holder")
+				st.CheckedOut++
+			} else {
+				e.log.WithField("license", lic.Name).WithField("holder", t.ID).
+					Warn("no free seat available; checkout skipped")
+				recordErr(fmt.Errorf("no free seat available for holder %d on license %q", t.ID, lic.Name))
+			}
 			continue
 		}
 		seatID := free[0]
@@ -192,10 +241,11 @@ func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, err
 		}
 		if cerr != nil && !isDryRun(cerr) {
 			e.log.WithError(cerr).WithField("holder", t.ID).Warn("seat checkout failed")
+			recordErr(cerr)
 			continue
 		}
 		st.CheckedOut++
 	}
 
-	return st, nil
+	return st, firstErr
 }

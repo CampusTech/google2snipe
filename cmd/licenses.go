@@ -142,8 +142,14 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 func loadAssignments(ctx context.Context, cfg *config.Config, logger *logrus.Logger) ([]google.LicenseAssignment, error) {
 	path := filepath.Join(cfg.Sync.CacheDir, "license_assignments.json")
 	if cfg.Sync.UseCache {
-		if data, err := os.ReadFile(path); err == nil {
+		data, err := os.ReadFile(path)
+		switch {
+		case err == nil:
 			return google.DeserializeAssignments(data)
+		case os.IsNotExist(err):
+			// expected on first run; fall through to a live fetch
+		default:
+			logger.WithError(err).WithField("path", path).Warn("license assignments cache unreadable; fetching live")
 		}
 	}
 	gl, err := google.NewLicensingClient(cfg.Google, cfg.Licenses.Workspace.CustomerID, logger)
@@ -156,7 +162,7 @@ func loadAssignments(ctx context.Context, cfg *config.Config, logger *logrus.Log
 	}
 	if data, err := google.SerializeAssignments(asg); err == nil {
 		_ = os.MkdirAll(cfg.Sync.CacheDir, 0o755)
-		_ = os.WriteFile(path, data, 0o644)
+		_ = os.WriteFile(path, data, 0o600)
 	}
 	return asg, nil
 }

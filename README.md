@@ -321,7 +321,7 @@ Run this once (and again when your subscriptions change) to build the `licenses:
 This command is **interactive**:
 
 1. Reads all ChromeOS devices (from the Google Admin API, or the local cache when `sync.use_cache: true` is set in the config) and collects every distinct `deviceLicenseType` found.
-2. Calls the **Enterprise License Manager API** to list all active Workspace SKU assignments across your domain.
+2. Probes the supported Workspace products via the Enterprise License Manager API and collects the assignments it can access.
 3. For each discovered Chrome upgrade type and Workspace SKU, prompts you for the per-seat cost in USD.
 4. Writes the resulting `licenses:` block into `settings.yaml` (comments preserved) and sets `licenses.enabled: true`.
 

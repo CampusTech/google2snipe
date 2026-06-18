@@ -98,10 +98,13 @@ func TestSyncChromeSetsReassignableFromType(t *testing.T) {
 	for _, s := range rec.specs {
 		got[s.Name] = s.Reassignable
 	}
-	if got["Perp"] != false {
-		t.Errorf("perpetual license Reassignable = %v, want false", got["Perp"])
+	if len(rec.specs) != 2 {
+		t.Fatalf("expected 2 EnsureLicense specs, got %d", len(rec.specs))
 	}
-	if got["Recurring"] != true {
-		t.Errorf("fixed-term license Reassignable = %v, want true", got["Recurring"])
+	if v, ok := got["Perp"]; !ok || v != false {
+		t.Errorf("perpetual license Reassignable = %v (present=%v), want false", v, ok)
+	}
+	if v, ok := got["Recurring"]; !ok || v != true {
+		t.Errorf("fixed-term license Reassignable = %v (present=%v), want true", v, ok)
 	}
 }

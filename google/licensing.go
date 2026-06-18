@@ -99,7 +99,7 @@ func (c *LicensingClient) ListAssignments(ctx context.Context, products []string
 				var gerr *googleapi.Error
 				if errors.As(err, &gerr) {
 					if isServiceDisabled(err) {
-						return nil, fmt.Errorf("Google Licensing API is not enabled for the service account's project — enable licensing.googleapis.com and retry: %w", err)
+						return nil, fmt.Errorf("enable the Google Licensing API (licensing.googleapis.com) for the service account's project, then retry: %w", err)
 					}
 					if gerr.Code == 403 || gerr.Code == 404 {
 						c.log.WithField("product", product).WithField("code", gerr.Code).Debug("skipping product (customer not entitled)")

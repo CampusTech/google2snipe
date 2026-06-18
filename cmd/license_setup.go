@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -74,6 +75,9 @@ func runLicensesSetup(cmd *cobra.Command, args []string) error {
 	}
 
 	// 2) Chrome upgrade types from devices
+	if _, err := os.Stat(filepath.Join(cfg.Sync.CacheDir, "devices.json")); err == nil {
+		cfg.Sync.UseCache = true
+	}
 	devs, err := loadDevices(cmd.Context(), cfg)
 	if err != nil {
 		return err
