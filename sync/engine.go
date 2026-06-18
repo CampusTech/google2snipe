@@ -303,7 +303,8 @@ func (e *Engine) lookupUser(email string) (int, bool) {
 	return 0, false
 }
 
-// SyncAll reconciles every device through a bounded worker pool and returns run statistics.
+// SyncAll reconciles every device through a bounded worker pool and returns run
+// statistics. It is not safe to call concurrently with itself or StatsSnapshot.
 func (e *Engine) SyncAll(devs []google.Device) Stats {
 	workers := e.cfg.Sync.Concurrency
 	if workers < 1 {

@@ -425,4 +425,10 @@ func TestSyncAllConcurrentNoRace(t *testing.T) {
 	if st.Created != 200 {
 		t.Fatalf("Created = %d, want 200", st.Created)
 	}
+	// All 200 devices resolve to the same model name, so correct double-checked
+	// locking must create it exactly once (a missing second cache-check would
+	// double-create under the lock — a logic bug -race cannot catch).
+	if len(stub.models) != 1 {
+		t.Fatalf("model created %d times, want 1 (concurrent ensureModel de-dup)", len(stub.models))
+	}
 }
