@@ -138,8 +138,9 @@ var FullOnlyPaths = map[string]bool{
 	"diskSpaceUsage": true, "tpmVersionInfo": true,
 }
 
-// Load reads, applies env overrides + defaults, and validates a config file.
-func Load(path string) (*Config, error) {
+// loadConfig reads, applies env overrides + defaults, and validates a config file.
+// It does NOT check for the licenses category requirement.
+func loadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
@@ -154,6 +155,25 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// Load reads, validates, and returns the config. It additionally requires a
+// license category id once license cost sync is enabled.
+func Load(path string) (*Config, error) {
+	c, err := loadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	if c.Licenses.Enabled && c.Licenses.DefaultLicenseCategoryID == 0 {
+		return nil, fmt.Errorf("licenses.default_license_category_id is required when licenses.enabled")
+	}
+	return c, nil
+}
+
+// LoadForSetup is like Load but tolerates licenses.enabled without a category id,
+// so `licenses setup` can run before that id is configured.
+func LoadForSetup(path string) (*Config, error) {
+	return loadConfig(path)
 }
 
 func (c *Config) applyEnv() {
@@ -248,9 +268,6 @@ func (c *Config) Validate() error {
 	case "assign", "sync", "force":
 	default:
 		return fmt.Errorf("checkout.mode must be assign|sync|force, got %q", c.Sync.Checkout.Mode)
-	}
-	if c.Licenses.Enabled && c.Licenses.DefaultLicenseCategoryID == 0 {
-		return fmt.Errorf("licenses.default_license_category_id is required when licenses.enabled")
 	}
 	return nil
 }
