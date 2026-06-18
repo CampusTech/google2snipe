@@ -160,6 +160,28 @@ func (c *Client) GetAssetBySerial(serial string) ([]Asset, error) {
 	return out, nil
 }
 
+// ListAllAssets pages through every hardware asset in Snipe-IT and returns them
+// all mapped to the local Asset type.
+func (c *Client) ListAllAssets() ([]Asset, error) {
+	var out []Asset
+	offset := 0
+	const limit = 500
+	for {
+		resp, _, err := c.sc.Assets.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		if err != nil {
+			return nil, fmt.Errorf("listing assets: %w", err)
+		}
+		for _, a := range resp.Rows {
+			out = append(out, fromSnipeAsset(a))
+		}
+		if len(out) >= resp.Total {
+			break
+		}
+		offset += limit
+	}
+	return out, nil
+}
+
 // CreateAsset creates a hardware asset and returns it with its assigned ID and
 // asset tag.
 // CreateAsset creates an asset. On custom-field validation errors (Snipe
