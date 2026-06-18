@@ -3,8 +3,10 @@ package google
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"golang.org/x/oauth2/google"
@@ -22,6 +24,35 @@ type Client struct {
 	orgUnit    string
 	query      string
 	log        *logrus.Logger
+}
+
+// debugTransport logs each Admin SDK HTTP request at debug level (method, URL,
+// status, latency) so --debug covers the Google SDK, not just our own log
+// lines. It never logs request/response headers, so the bearer token added by
+// the wrapped oauth2 transport is not exposed.
+type debugTransport struct {
+	base http.RoundTripper
+	log  *logrus.Logger
+}
+
+func (t *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	start := time.Now()
+	resp, err := base.RoundTrip(req)
+	fields := logrus.Fields{
+		"method": req.Method,
+		"url":    req.URL.String(),
+		"ms":     time.Since(start).Milliseconds(),
+	}
+	if err != nil {
+		t.log.WithFields(fields).WithError(err).Debug("google api request error")
+		return resp, err
+	}
+	t.log.WithFields(fields).WithField("status", resp.StatusCode).Debug("google api request")
+	return resp, err
 }
 
 // New builds an authenticated Client using a service-account key with
@@ -45,7 +76,12 @@ func New(cfg cfgpkg.GoogleConfig, logger *logrus.Logger) (*Client, error) {
 	jwtCfg.Subject = cfg.ImpersonateSubject
 
 	ctx := context.Background()
-	svc, err := admin.NewService(ctx, option.WithTokenSource(jwtCfg.TokenSource(ctx)))
+	// Build the HTTP client ourselves (oauth2 transport for DWD auth) and wrap
+	// it with a debug-logging transport, so --debug surfaces the Admin SDK's
+	// actual HTTP requests rather than only our own log lines.
+	httpClient := jwtCfg.Client(ctx)
+	httpClient.Transport = &debugTransport{base: httpClient.Transport, log: logger}
+	svc, err := admin.NewService(ctx, option.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, fmt.Errorf("create directory service: %w", err)
 	}
