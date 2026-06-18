@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -122,7 +124,10 @@ func New(url, apiKey string, dryRun, rateLimit bool, logger *logrus.Logger) (*Cl
 	}
 	baseURL := strings.TrimRight(url, "/")
 
-	opts := &snipeit.ClientOptions{Logger: &snipeLogger{logger: logger}}
+	opts := &snipeit.ClientOptions{
+		Logger:         &snipeLogger{logger: logger},
+		DisableRetries: true, // retry429 handles retries at our layer
+	}
 	if rateLimit {
 		opts.RateLimiter = snipeit.NewTokenBucketRateLimiter(2, 5)
 	}
@@ -132,6 +137,36 @@ func New(url, apiKey string, dryRun, rateLimit bool, logger *logrus.Logger) (*Cl
 		return nil, fmt.Errorf("creating snipe-it client: %w", err)
 	}
 	return &Client{sc: sc, dryRun: dryRun, logger: logger}, nil
+}
+
+// retry429 runs fn and, if the HTTP response is a 429 Too Many Requests,
+// sleeps for the Retry-After duration (or exponential backoff starting at
+// 500 ms, capped at 30 s) and retries up to 6 attempts total. Any other
+// error (or a nil response) is returned immediately.
+func (c *Client) retry429(op string, fn func() (*http.Response, error)) error {
+	const maxAttempts = 6
+	backoff := 500 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		resp, err := fn()
+		if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+			return err
+		}
+		if attempt >= maxAttempts {
+			return fmt.Errorf("%s: still rate-limited after %d attempts: %w", op, maxAttempts, err)
+		}
+		wait := backoff
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, perr := strconv.Atoi(strings.TrimSpace(ra)); perr == nil {
+				wait = time.Duration(secs) * time.Second
+			}
+		}
+		c.logger.WithFields(logrus.Fields{"op": op, "attempt": attempt, "wait": wait.String()}).
+			Warn("snipe 429; backing off")
+		time.Sleep(wait)
+		if backoff *= 2; backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
+	}
 }
 
 // Ping fetches one record to verify the API key works and returns a short
@@ -147,7 +182,12 @@ func (c *Client) Ping() (string, error) {
 // GetAssetBySerial looks up assets by serial. Snipe's /byserial endpoint does a
 // partial search, so this filters to exact case-insensitive matches.
 func (c *Client) GetAssetBySerial(serial string) ([]Asset, error) {
-	resp, _, err := c.sc.Assets.GetAssetBySerialContext(context.Background(), serial)
+	var resp *snipeit.AssetsResponse
+	err := c.retry429("get asset by serial", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Assets.GetAssetBySerialContext(context.Background(), serial)
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return nil, fmt.Errorf("looking up serial %s: %w", serial, err)
 	}
@@ -167,7 +207,12 @@ func (c *Client) ListAllAssets() ([]Asset, error) {
 	offset := 0
 	const limit = 500
 	for {
-		resp, _, err := c.sc.Assets.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		var resp *snipeit.AssetsResponse
+		err := c.retry429("list assets", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Assets.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing assets: %w", err)
 		}
@@ -193,7 +238,12 @@ func (c *Client) CreateAsset(a Asset) (Asset, error) {
 		return Asset{}, ErrDryRun
 	}
 	sa := toSnipeAsset(a)
-	resp, _, err := c.sc.Assets.CreateContext(context.Background(), sa)
+	var resp *snipeit.AssetCreateResponse
+	err := c.retry429("create asset", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Assets.CreateContext(context.Background(), sa)
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return Asset{}, fmt.Errorf("creating asset: %w", err)
 	}
@@ -218,7 +268,11 @@ func (c *Client) CreateAsset(a Asset) (Asset, error) {
 			delete(cleaned, k)
 		}
 		sa.CustomFields = cleaned
-		resp, _, err = c.sc.Assets.CreateContext(context.Background(), sa)
+		err = c.retry429("create asset (field retry)", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Assets.CreateContext(context.Background(), sa)
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return Asset{}, fmt.Errorf("creating asset (retry): %w", err)
 		}
@@ -239,7 +293,12 @@ func (c *Client) PatchAsset(id int, a Asset) (Asset, error) {
 		return Asset{}, ErrDryRun
 	}
 	sa := toSnipeAsset(a)
-	resp, _, err := c.sc.Assets.PatchContext(context.Background(), id, sa)
+	var resp *snipeit.AssetCreateResponse
+	err := c.retry429("patch asset", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Assets.PatchContext(context.Background(), id, sa)
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return Asset{}, fmt.Errorf("updating asset %d: %w", id, err)
 	}
@@ -264,7 +323,11 @@ func (c *Client) PatchAsset(id int, a Asset) (Asset, error) {
 			delete(cleaned, k)
 		}
 		sa.CustomFields = cleaned
-		resp, _, err = c.sc.Assets.PatchContext(context.Background(), id, sa)
+		err = c.retry429("patch asset (field retry)", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Assets.PatchContext(context.Background(), id, sa)
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return Asset{}, fmt.Errorf("updating asset %d (retry): %w", id, err)
 		}
@@ -286,7 +349,12 @@ func (c *Client) CheckoutAssetToUser(assetID, userID int) error {
 		"checkout_to_type": "user",
 		"assigned_user":    userID,
 	}
-	resp, _, err := c.sc.Assets.CheckoutContext(context.Background(), assetID, body)
+	var resp *snipeit.AssetCreateResponse
+	err := c.retry429("checkout asset", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Assets.CheckoutContext(context.Background(), assetID, body)
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return fmt.Errorf("checking out asset %d to user %d: %w", assetID, userID, err)
 	}
@@ -303,13 +371,20 @@ func (c *Client) CheckinAsset(assetID int) error {
 	if c.dryRun {
 		return ErrDryRun
 	}
-	resp, httpResp, err := c.sc.Assets.CheckinContext(context.Background(), assetID, map[string]any{})
+	var resp *snipeit.AssetCreateResponse
+	var savedHTTPResp *http.Response
+	err := c.retry429("checkin asset", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Assets.CheckinContext(context.Background(), assetID, map[string]any{})
+		resp = r
+		savedHTTPResp = httpResp
+		return httpResp, e
+	})
 	if err != nil {
 		// go-snipeit types the checkin response's payload.model as an object,
 		// but Snipe-IT returns it as a string, so the SUCCESS body fails to
 		// unmarshal. If the HTTP call returned 2xx, the check-in happened
 		// server-side — treat a body-parse error as success.
-		if httpResp != nil && httpResp.StatusCode >= 200 && httpResp.StatusCode < 300 &&
+		if savedHTTPResp != nil && savedHTTPResp.StatusCode >= 200 && savedHTTPResp.StatusCode < 300 &&
 			strings.Contains(err.Error(), "unmarshal") {
 			return nil
 		}
@@ -332,7 +407,12 @@ func (c *Client) ListAllModels() ([]Model, error) {
 	offset := 0
 	const limit = 500
 	for {
-		resp, _, err := c.sc.Models.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		var resp *snipeit.ModelsResponse
+		err := c.retry429("list models", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Models.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing models: %w", err)
 		}
@@ -352,7 +432,12 @@ func (c *Client) CreateModel(m Model) (Model, error) {
 	if c.dryRun {
 		return Model{}, ErrDryRun
 	}
-	resp, _, err := c.sc.Models.CreateContext(context.Background(), toSnipeModel(m))
+	var resp *snipeit.ModelResponse
+	err := c.retry429("create model", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Models.CreateContext(context.Background(), toSnipeModel(m))
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return Model{}, fmt.Errorf("creating model: %w", err)
 	}
@@ -368,7 +453,12 @@ func (c *Client) ListAllManufacturers() ([]Manufacturer, error) {
 	offset := 0
 	const limit = 500
 	for {
-		resp, _, err := c.sc.Manufacturers.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		var resp *snipeit.ManufacturersResponse
+		err := c.retry429("list manufacturers", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Manufacturers.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing manufacturers: %w", err)
 		}
@@ -395,7 +485,12 @@ func (c *Client) ListAllStatusLabels() ([]StatusLabel, error) {
 	offset := 0
 	const limit = 500
 	for {
-		resp, _, err := c.sc.StatusLabels.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		var resp *snipeit.StatusLabelsResponse
+		err := c.retry429("list status labels", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.StatusLabels.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing status labels: %w", err)
 		}
@@ -417,7 +512,12 @@ func (c *Client) CreateManufacturer(name string) (Manufacturer, error) {
 	}
 	m := snipeit.Manufacturer{}
 	m.Name = name
-	resp, _, err := c.sc.Manufacturers.CreateContext(context.Background(), m)
+	var resp *snipeit.ManufacturerResponse
+	err := c.retry429("create manufacturer", func() (*http.Response, error) {
+		r, httpResp, e := c.sc.Manufacturers.CreateContext(context.Background(), m)
+		resp = r
+		return httpResp, e
+	})
 	if err != nil {
 		return Manufacturer{}, fmt.Errorf("creating manufacturer: %w", err)
 	}
@@ -433,7 +533,12 @@ func (c *Client) ListAllUsers() ([]User, error) {
 	offset := 0
 	const limit = 500
 	for {
-		resp, _, err := c.sc.Users.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		var resp *snipeit.UsersResponse
+		err := c.retry429("list users", func() (*http.Response, error) {
+			r, httpResp, e := c.sc.Users.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+			resp = r
+			return httpResp, e
+		})
 		if err != nil {
 			return nil, fmt.Errorf("listing users: %w", err)
 		}

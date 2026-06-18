@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -18,6 +19,35 @@ func TestDryRunBlocksCreate(t *testing.T) {
 	_, err = c.CreateAsset(Asset{Serial: "X1", ModelID: 1, StatusID: 1})
 	if !errors.Is(err, ErrDryRun) {
 		t.Fatalf("CreateAsset in dry-run = %v, want ErrDryRun", err)
+	}
+}
+
+func TestCreateAssetRetriesOn429(t *testing.T) {
+	var n int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if atomic.AddInt32(&n, 1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(429)
+			_, _ = w.Write([]byte(`{"status":"error","messages":"rate limited"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"success","payload":{"id":7,"asset_tag":"A","serial":"S"}}`))
+	}))
+	defer srv.Close()
+	c, err := New(srv.URL, "k", false, false, logrus.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := c.CreateAsset(Asset{Serial: "S", ModelID: 1, StatusID: 1})
+	if err != nil {
+		t.Fatalf("expected success after retry, got %v", err)
+	}
+	if a.ID != 7 {
+		t.Fatalf("asset id = %d, want 7", a.ID)
+	}
+	if atomic.LoadInt32(&n) < 2 {
+		t.Fatalf("expected a retry (>=2 requests), got %d", n)
 	}
 }
 
