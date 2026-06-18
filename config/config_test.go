@@ -156,6 +156,37 @@ sync:
 	})
 }
 
+func TestChromePerpetualClassification(t *testing.T) {
+	cases := map[string]bool{
+		"educationUpgradePerpetual":  true,
+		"enterpriseUpgradePerpetual": true,
+		"educationUpgrade":           true, // deprecated standalone perpetual
+		"education":                  true, // bundled perpetual
+		"enterprise":                 true, // bundled perpetual
+		"educationUpgradeFixedTerm":  false,
+		"enterpriseUpgradeFixedTerm": false,
+		"enterpriseUpgrade":          false, // deprecated annual
+		"kioskUpgrade":               false, // annual
+	}
+	for typ, want := range cases {
+		if got := ChromePerpetual(typ); got != want {
+			t.Errorf("ChromePerpetual(%q) = %v, want %v", typ, got, want)
+		}
+	}
+}
+
+func TestLicensesValidationRequiresCategory(t *testing.T) {
+	p := writeTemp(t, `
+google: {credentials_file: /tmp/sa.json, impersonate_subject: a@b.com}
+snipe_it: {url: https://x, api_key: k, default_status_id: 1, default_category_id: 2}
+licenses:
+  enabled: true
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected error: licenses.enabled requires default_license_category_id")
+	}
+}
+
 // TestFullOnlyPathsWarningNotError verifies that a field_mapping with a FullOnly path
 // under projection=basic is a warning (Load succeeds) and the mapping is present.
 func TestFullOnlyPathsWarningNotError(t *testing.T) {

@@ -11,9 +11,10 @@ import (
 
 // Config is the top-level YAML config. See Shared Type Reference in the plan.
 type Config struct {
-	Google  GoogleConfig  `yaml:"google"`
-	SnipeIT SnipeITConfig `yaml:"snipe_it"`
-	Sync    SyncConfig    `yaml:"sync"`
+	Google   GoogleConfig   `yaml:"google"`
+	SnipeIT  SnipeITConfig  `yaml:"snipe_it"`
+	Sync     SyncConfig     `yaml:"sync"`
+	Licenses LicensesConfig `yaml:"licenses"`
 }
 
 type GoogleConfig struct {
@@ -86,6 +87,39 @@ type CheckoutConfig struct {
 	Mode             string `yaml:"mode"`
 }
 
+type LicensesConfig struct {
+	Enabled                  bool                           `yaml:"enabled"`
+	DefaultLicenseCategoryID int                            `yaml:"default_license_category_id"`
+	Chrome                   map[string]ChromeLicenseConfig `yaml:"chrome"`
+	Workspace                WorkspaceLicenseConfig         `yaml:"workspace"`
+}
+
+type ChromeLicenseConfig struct {
+	Name         string  `yaml:"name"`
+	Cost         float64 `yaml:"cost"`
+	Reassignable *bool   `yaml:"reassignable"`
+	TermMonths   int     `yaml:"term_months"`
+}
+
+type WorkspaceLicenseConfig struct {
+	CustomerID string             `yaml:"customer_id"`
+	Products   []string           `yaml:"products"`
+	SKUCosts   map[string]float64 `yaml:"sku_costs"`
+}
+
+// ChromePerpetual reports whether a ChromeOS deviceLicenseType is a perpetual
+// (non-reassignable) upgrade. Recurring = fixed-term or annual.
+func ChromePerpetual(deviceLicenseType string) bool {
+	if strings.Contains(strings.ToLower(deviceLicenseType), "fixedterm") {
+		return false
+	}
+	switch deviceLicenseType {
+	case "enterpriseUpgrade", "kioskUpgrade": // deprecated-annual / kiosk-annual
+		return false
+	}
+	return true
+}
+
 // KnownTransforms is the set of transform names accepted in field_mapping.
 var KnownTransforms = map[string]bool{
 	"": true, "bytes_to_gb": true, "bytes_to_gib": true, "bytes_to_mb": true,
@@ -104,8 +138,9 @@ var FullOnlyPaths = map[string]bool{
 	"diskSpaceUsage": true, "tpmVersionInfo": true,
 }
 
-// Load reads, applies env overrides + defaults, and validates a config file.
-func Load(path string) (*Config, error) {
+// loadConfig reads, applies env overrides + defaults, and validates a config file.
+// It does NOT check for the licenses category requirement.
+func loadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
@@ -120,6 +155,25 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// Load reads, validates, and returns the config. It additionally requires a
+// license category id once license cost sync is enabled.
+func Load(path string) (*Config, error) {
+	c, err := loadConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	if c.Licenses.Enabled && c.Licenses.DefaultLicenseCategoryID == 0 {
+		return nil, fmt.Errorf("licenses.default_license_category_id is required when licenses.enabled")
+	}
+	return c, nil
+}
+
+// LoadForSetup is like Load but tolerates licenses.enabled without a category id,
+// so `licenses setup` can run before that id is configured.
+func LoadForSetup(path string) (*Config, error) {
+	return loadConfig(path)
 }
 
 func (c *Config) applyEnv() {

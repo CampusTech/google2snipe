@@ -69,3 +69,17 @@ sync:
 #   _snipeit_chrome_dock_mac_X: {path: dockMacAddress, transform: mac_colons}
 #   _snipeit_chrome_will_renew_X: {path: willAutoRenew, transform: bool_yes_no}
 #   _snipeit_chrome_deprovision_reason_X: deprovisionReason
+
+# Optional: license cost sync (run `google2snipe licenses setup` to populate).
+licenses:
+  enabled: false
+  default_license_category_id: 0        # REQUIRED when enabled (Snipe license category).
+                                        # Leave blank at the `licenses setup` prompt to create one automatically.
+  chrome:                               # keyed by deviceLicenseType; perpetual => non-reassignable
+    educationUpgradePerpetual:
+      name: "Chrome Education Upgrade (Perpetual)"
+      cost: 0.00                        # one-time per device/seat
+  workspace:
+    customer_id: ""                     # Workspace domain or customer id ("" => derive from impersonate_subject)
+    products: []                        # filled by `licenses setup`
+    sku_costs: {}                       # SKU -> per-seat $/yr

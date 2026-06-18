@@ -254,7 +254,91 @@ snipe_it:    # url, api_key, default_status_id, default_category_id, default_man
              # custom_fieldset_id, status_map, manufacturer_ids
 sync:        # dry_run, force, rate_limit, update_only, use_cache, cache_dir, set_name, name_template,
              # asset_tag.template, field_mapping (managed by setup), checkout {...}
+licenses:    # enabled, default_license_category_id, chrome {...}, workspace {...}
 ```
+
+## License cost sync
+
+`google2snipe` can attribute the ongoing cost of your Google Workspace subscriptions and ChromeOS device upgrade licenses by syncing them into Snipe-IT as cost-bearing **Licenses** with seats.
+
+- **Workspace licenses** — each active Workspace SKU becomes a Snipe-IT License with one seat per assigned user. Stale seats are checked in and fresh ones created each run (fully reconciled).
+- **Chrome upgrade licenses** — each `deviceLicenseType` found on your ChromeOS devices becomes a Snipe-IT License with one seat per device.
+
+### Modeling: perpetual vs. recurring
+
+All licenses are represented as Snipe-IT Licenses with seats. How seats are managed depends on the license term:
+
+| Type | `reassignable` | Reconcile behavior |
+|---|---|---|
+| Perpetual Chrome upgrade (e.g. `educationUpgradePerpetual`) | `false` | **Additive only** — seats are created when a device is seen and never reclaimed. Perpetual licenses are one-time purchases tied to a device for its lifetime. |
+| Recurring Chrome upgrade (fixed-term / annual) | `true` | **Fully reconciled** — stale seats are checked in, fresh ones created. Optional expiry date set from the term. |
+| All Workspace SKUs | `true` | **Fully reconciled** — stale seats checked in, fresh ones created each sync. |
+
+### Prerequisites
+
+These three steps are required before enabling the license sync:
+
+1. **Add the `apps.licensing` DWD scope** to your service account. In the Google Admin console go to Security → Access and data control → API controls → Domain-wide delegation, find your service account's client ID, and add:
+
+   ```
+   https://www.googleapis.com/auth/apps.licensing
+   ```
+
+   This scope is required for the Workspace license discovery and seat reconciliation calls.
+
+2. **Enable the Enterprise License Manager API** in the Google Cloud project that owns the service account:
+
+   ```sh
+   gcloud services enable licensing.googleapis.com --project=<your-project>
+   ```
+
+   Without this, all license assignment calls fail with `SERVICE_DISABLED`. The tool surfaces this as a clear error message.
+
+3. **Provide a Snipe-IT license category.** When you run `google2snipe licenses setup` it will prompt for a category id. Leave the prompt blank and the command will offer to create a new category for you (defaulting to the name "Software Licenses") — just press Enter twice to accept the defaults. If you prefer to manage categories yourself, create one in Snipe-IT under Settings → Categories (type: License), note the ID, and enter it at the prompt (or set it directly in `settings.yaml`):
+
+   ```yaml
+   licenses:
+     enabled: true
+     default_license_category_id: 7   # your license category ID
+   ```
+
+### A note on pricing
+
+Google exposes no pricing API — not even the Reseller or Cloud Channel APIs surface per-seat costs for direct customers. Costs are captured once, interactively, via `google2snipe licenses setup` and stored in `settings.yaml`. Update them there when your subscription pricing changes.
+
+License costs are recorded as the **per-seat** price on each Snipe-IT License (so a user's assigned license seat reflects that user's per-seat cost); the License's total-cost field therefore reflects the per-seat unit, not the full subscription total.
+
+### Commands
+
+#### `google2snipe licenses setup` — discover and price
+
+Run this once (and again when your subscriptions change) to build the `licenses:` config block:
+
+```sh
+./google2snipe licenses setup
+```
+
+This command is **interactive**:
+
+1. Reads all ChromeOS devices (from the Google Admin API, or the local cache when `sync.use_cache: true` is set in the config) and collects every distinct `deviceLicenseType` found.
+2. Probes the supported Workspace products via the Enterprise License Manager API and collects the assignments it can access.
+3. For each discovered Chrome upgrade type and Workspace SKU, prompts you for the per-seat cost in USD.
+4. Writes the resulting `licenses:` block into `settings.yaml` (comments preserved) and sets `licenses.enabled: true`.
+
+After running setup, review the written config and then run `sync`.
+
+#### `google2snipe licenses sync` — reconcile
+
+```sh
+./google2snipe licenses sync                # full reconciliation
+./google2snipe licenses sync --dry-run      # preview without mutating Snipe-IT
+./google2snipe licenses sync --use-cache    # replay devices/users/assignments from .cache/
+```
+
+- **Chrome:** iterates every synced device, creates or updates the corresponding Snipe-IT License seat (keyed by asset serial → Snipe asset ID). Perpetual upgrades are additive; recurring upgrades are reconciled.
+- **Workspace:** fetches live license assignments from the Enterprise License Manager API (or `.cache/license_assignments.json` with `--use-cache`), matches users by email to Snipe-IT users, and reconciles seats per SKU. Users with no matching Snipe-IT account are logged and skipped — no users are auto-created.
+
+`--dry-run` is gated at every Snipe-IT write (same enforcement as the `sync` command). Run from cron alongside `google2snipe sync`.
 
 ## Docker
 
