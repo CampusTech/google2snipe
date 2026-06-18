@@ -91,6 +91,7 @@ type CheckoutConfig struct {
 type LicensesConfig struct {
 	Enabled                  bool                           `yaml:"enabled"`
 	DefaultLicenseCategoryID int                            `yaml:"default_license_category_id"`
+	OrgUnitPaths             []string                       `yaml:"org_unit_paths"`
 	Chrome                   map[string]ChromeLicenseConfig `yaml:"chrome"`
 	Workspace                WorkspaceLicenseConfig         `yaml:"workspace"`
 }
