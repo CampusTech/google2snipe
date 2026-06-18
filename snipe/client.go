@@ -361,6 +361,33 @@ func (c *Client) ListAllManufacturers() ([]Manufacturer, error) {
 	return out, nil
 }
 
+// StatusLabel is a data-source-agnostic view of a Snipe-IT status label.
+type StatusLabel struct {
+	ID   int
+	Type string // "deployable" | "pending" | "archived" | "undeployable"
+}
+
+// ListAllStatusLabels pages through every status label.
+func (c *Client) ListAllStatusLabels() ([]StatusLabel, error) {
+	var out []StatusLabel
+	offset := 0
+	const limit = 500
+	for {
+		resp, _, err := c.sc.StatusLabels.ListContext(context.Background(), &snipeit.ListOptions{Limit: limit, Offset: offset})
+		if err != nil {
+			return nil, fmt.Errorf("listing status labels: %w", err)
+		}
+		for _, s := range resp.Rows {
+			out = append(out, StatusLabel{ID: s.ID, Type: s.Type})
+		}
+		if len(out) >= resp.Total {
+			break
+		}
+		offset += limit
+	}
+	return out, nil
+}
+
 // CreateManufacturer creates a manufacturer by name.
 func (c *Client) CreateManufacturer(name string) (Manufacturer, error) {
 	if c.dryRun {

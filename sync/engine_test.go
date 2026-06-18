@@ -331,3 +331,46 @@ func TestSyncDeviceDryRunNoMutators(t *testing.T) {
 		t.Errorf("dry-run must not call CreateAsset, got created=%v", stub.created)
 	}
 }
+
+func TestApplyCheckoutSkipsNonDeployableStatus(t *testing.T) {
+	cfg := baseCfg() // DefaultStatusID = 1
+	cfg.SnipeIT.StatusMap = map[string]int{"DISABLED": 9}
+	cfg.Sync.Checkout = config.CheckoutConfig{
+		Enabled: true, UseAnnotatedUser: true, MatchField: "email", Mode: "sync",
+	}
+	stub := &stubSnipe{
+		bySerial: map[string][]snipe.Asset{},
+		users:    []snipe.User{{ID: 10, Email: "owner@example.com"}},
+		statusLabels: []snipe.StatusLabel{
+			{ID: 1, Type: "deployable"}, {ID: 9, Type: "archived"},
+		},
+	}
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(); err != nil {
+		t.Fatal(err)
+	}
+
+	// DISABLED -> status 9 (archived) -> not deployable -> no checkout, even
+	// though a matching user exists.
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+		SerialNumber: "D1", Status: "DISABLED", Model: "Acer Chromebook 311", AnnotatedUser: "owner@example.com",
+	}))
+	if len(stub.checkouts) != 0 {
+		t.Errorf("non-deployable device must not be checked out, got %v", stub.checkouts)
+	}
+
+	// ACTIVE -> default status 1 (deployable) -> IS checked out.
+	stub.checkouts = nil
+	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+		SerialNumber: "D2", Status: "ACTIVE", Model: "Acer Chromebook 311", AnnotatedUser: "owner@example.com",
+	}))
+	found := false
+	for _, uid := range stub.checkouts {
+		if uid == 10 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("deployable device should be checked out to user 10, got %v", stub.checkouts)
+	}
+}

@@ -20,15 +20,16 @@ func mustJSON(t *testing.T, d *admin.ChromeOsDevice) []byte {
 
 // stubSnipe is an in-memory SnipeClient for engine tests.
 type stubSnipe struct {
-	bySerial  map[string][]snipe.Asset
-	created   []snipe.Asset
-	patched   map[int]snipe.Asset
-	checkouts map[int]int // assetID -> userID
-	checkins  []int       // assetIDs that were checked in
-	models    []snipe.Model
-	manufs    []snipe.Manufacturer
-	users     []snipe.User
-	nextID    int
+	bySerial     map[string][]snipe.Asset
+	created      []snipe.Asset
+	patched      map[int]snipe.Asset
+	checkouts    map[int]int // assetID -> userID
+	checkins     []int       // assetIDs that were checked in
+	models       []snipe.Model
+	manufs       []snipe.Manufacturer
+	users        []snipe.User
+	statusLabels []snipe.StatusLabel
+	nextID       int
 }
 
 func (s *stubSnipe) GetAssetBySerial(serial string) ([]snipe.Asset, error) {
@@ -74,3 +75,6 @@ func (s *stubSnipe) CreateManufacturer(name string) (snipe.Manufacturer, error) 
 	return m, nil
 }
 func (s *stubSnipe) ListAllUsers() ([]snipe.User, error) { return s.users, nil }
+func (s *stubSnipe) ListAllStatusLabels() ([]snipe.StatusLabel, error) {
+	return s.statusLabels, nil
+}

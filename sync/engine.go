@@ -25,6 +25,7 @@ type SnipeClient interface {
 	ListAllManufacturers() ([]snipe.Manufacturer, error)
 	CreateManufacturer(name string) (snipe.Manufacturer, error)
 	ListAllUsers() ([]snipe.User, error)
+	ListAllStatusLabels() ([]snipe.StatusLabel, error)
 }
 
 // Stats accumulates per-run counters.
@@ -36,10 +37,11 @@ type Engine struct {
 	snipe SnipeClient
 	log   *logrus.Logger
 
-	models        map[string]snipe.Model        // keyed by model name
-	manufacturers map[string]snipe.Manufacturer // keyed by lowercased name
-	userIndex     map[string]int                // keyed by lowercased match-field value
-	stats         Stats
+	models             map[string]snipe.Model        // keyed by model name
+	manufacturers      map[string]snipe.Manufacturer // keyed by lowercased name
+	userIndex          map[string]int                // keyed by lowercased match-field value
+	deployableStatuses map[int]bool                  // Snipe status-label IDs that allow checkout
+	stats              Stats
 }
 
 // New builds an Engine.
@@ -48,12 +50,13 @@ func New(cfg *config.Config, sc SnipeClient, logger *logrus.Logger) *Engine {
 		logger = logrus.New()
 	}
 	return &Engine{
-		cfg:           cfg,
-		snipe:         sc,
-		log:           logger,
-		models:        map[string]snipe.Model{},
-		manufacturers: map[string]snipe.Manufacturer{},
-		userIndex:     map[string]int{},
+		cfg:                cfg,
+		snipe:              sc,
+		log:                logger,
+		models:             map[string]snipe.Model{},
+		manufacturers:      map[string]snipe.Manufacturer{},
+		userIndex:          map[string]int{},
+		deployableStatuses: map[int]bool{},
 	}
 }
 
@@ -120,8 +123,18 @@ func (e *Engine) Warm() error {
 			e.userIndex[strings.ToLower(key)] = u.ID
 		}
 	}
+	labels, err := e.snipe.ListAllStatusLabels()
+	if err != nil {
+		return err
+	}
+	for _, s := range labels {
+		if strings.EqualFold(s.Type, "deployable") {
+			e.deployableStatuses[s.ID] = true
+		}
+	}
 	e.log.WithFields(logrus.Fields{
-		"models": len(e.models), "manufacturers": len(e.manufacturers), "users": len(e.userIndex),
+		"models": len(e.models), "manufacturers": len(e.manufacturers),
+		"users": len(e.userIndex), "deployable_statuses": len(e.deployableStatuses),
 	}).Info("warmed snipe-it caches")
 	return nil
 }
@@ -368,6 +381,14 @@ func (e *Engine) update(dev google.Device, existing snipe.Asset, l *logrus.Entry
 }
 
 func (e *Engine) applyCheckout(dev google.Device, asset snipe.Asset, l *logrus.Entry) {
+	// Snipe-IT only checks out assets whose status is deployable; skip devices
+	// whose mapped status isn't (e.g. DEPROVISIONED/DISABLED -> Archived) so we
+	// don't attempt an impossible checkout. Only enforced when status-label
+	// deployability is known.
+	if len(e.deployableStatuses) > 0 && !e.deployableStatuses[e.statusID(dev)] {
+		l.WithField("status", dev.Status).Debug("skipping checkout: non-deployable status")
+		return
+	}
 	userID, ok := e.resolveCheckoutUser(dev)
 	if !ok {
 		return
