@@ -325,8 +325,10 @@ func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
 		return License{}, ErrDryRun
 	}
 	body := map[string]any{
-		"name":          spec.Name,
-		"seats":         max(spec.Seats, 1),
+		"name": spec.Name,
+		// On create the license has 0 seats, so Snipe-IT's limit_change rule bounds the
+		// seats field to 1..maxSeatsPerChange. Clamp here; EnsureSeats grows the rest in steps.
+		"seats":         min(max(spec.Seats, 1), maxSeatsPerChange),
 		"category_id":   spec.CategoryID,
 		"reassignable":  spec.Reassignable,
 		"purchase_cost": spec.CostPerSeat,
@@ -442,24 +444,68 @@ func (c *LicenseClient) CheckinSeat(licenseID, seatID int) error {
 	return c.patchSeat(licenseID, seatID, map[string]any{"assigned_to": nil, "asset_id": nil})
 }
 
-// EnsureSeats grows the license's seat total to at least total.
+// maxSeatsPerChange mirrors Snipe-IT's `limit_change:10000` rule on a license's seats field
+// (app/Models/License.php prepareLimitChangeRule): a single create/update may change the seat
+// count by at most this much relative to the license's CURRENT seat-record count. It is NOT
+// an absolute cap on total seats — larger totals are reached by growing in repeated steps.
+const maxSeatsPerChange = 10000
+
+// EnsureSeats grows the license's seat total to at least total, stepping in increments no
+// larger than maxSeatsPerChange so Snipe-IT's per-change limit never rejects the request.
+// A license with, say, 25000 seats is reached as 10000 (create) -> 20000 -> 25000.
 func (c *LicenseClient) EnsureSeats(licenseID, total int) error {
 	if c.dryRun {
 		return ErrDryRun
 	}
-	raw, status, err := c.do(http.MethodPatch, fmt.Sprintf("/licenses/%d", licenseID), map[string]any{"seats": total})
+	current, err := c.licenseSeatCount(licenseID)
 	if err != nil {
 		return err
 	}
-	if err := check2xx(status, raw, fmt.Sprintf("growing license %d seats to %d", licenseID, total)); err != nil {
+	for current < total {
+		next := min(current+maxSeatsPerChange, total)
+		if err := c.patchLicenseSeats(licenseID, next); err != nil {
+			return err
+		}
+		current = next
+	}
+	return nil
+}
+
+// patchLicenseSeats sets the license's seat total in one request. The caller must keep each
+// change within maxSeatsPerChange of the current seat count.
+func (c *LicenseClient) patchLicenseSeats(licenseID, seats int) error {
+	raw, status, err := c.do(http.MethodPatch, fmt.Sprintf("/licenses/%d", licenseID), map[string]any{"seats": seats})
+	if err != nil {
+		return err
+	}
+	if err := check2xx(status, raw, fmt.Sprintf("growing license %d seats to %d", licenseID, seats)); err != nil {
 		return err
 	}
 	var r snipeResp
 	if err := json.Unmarshal(raw, &r); err != nil {
-		return fmt.Errorf("growing license %d seats to %d: %w", licenseID, total, err)
+		return fmt.Errorf("growing license %d seats to %d: %w", licenseID, seats, err)
 	}
 	if r.Status != "success" {
-		return fmt.Errorf("growing license %d seats to %d: %s", licenseID, total, string(r.Messages))
+		return fmt.Errorf("growing license %d seats to %d: %s", licenseID, seats, string(r.Messages))
 	}
 	return nil
+}
+
+// licenseSeatCount returns a license's current seat total via GET /licenses/{id}, which Snipe
+// returns as the bare license object.
+func (c *LicenseClient) licenseSeatCount(licenseID int) (int, error) {
+	raw, status, err := c.do(http.MethodGet, fmt.Sprintf("/licenses/%d", licenseID), nil)
+	if err != nil {
+		return 0, err
+	}
+	if err := check2xx(status, raw, fmt.Sprintf("reading license %d", licenseID)); err != nil {
+		return 0, err
+	}
+	var lic struct {
+		Seats int `json:"seats"`
+	}
+	if err := json.Unmarshal(raw, &lic); err != nil {
+		return 0, fmt.Errorf("reading license %d seats: %w", licenseID, err)
+	}
+	return lic.Seats, nil
 }
