@@ -48,5 +48,5 @@ func MergeLicenses(path string, lic LicensesConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0o644)
+	return os.WriteFile(path, out, 0o600)
 }

@@ -39,6 +39,7 @@ func runLicensesSetup(cmd *cobra.Command, args []string) error {
 		Chrome:                   map[string]config.ChromeLicenseConfig{},
 		Workspace:                config.WorkspaceLicenseConfig{SKUCosts: map[string]float64{}},
 	}
+	out.Workspace.CustomerID = cfg.Licenses.Workspace.CustomerID
 	in := bufio.NewReader(os.Stdin)
 	askCost := func(label string) float64 {
 		fmt.Printf("  %s\n    cost per seat (USD, blank=0): ", label)
@@ -72,7 +73,12 @@ func runLicensesSetup(cmd *cobra.Command, args []string) error {
 		}
 		name := fmt.Sprintf("Chrome Upgrade (%s)", t)
 		cost := askCost(fmt.Sprintf("%s  [%s · %d devices · %s]", name, kind, chromeCounts[t], t))
-		out.Chrome[t] = config.ChromeLicenseConfig{Name: name, Cost: cost}
+		cc := config.ChromeLicenseConfig{Name: name, Cost: cost}
+		if prev, ok := cfg.Licenses.Chrome[t]; ok {
+			cc.Reassignable = prev.Reassignable
+			cc.TermMonths = prev.TermMonths
+		}
+		out.Chrome[t] = cc
 	}
 
 	// 3) Workspace SKUs from the Licensing API
