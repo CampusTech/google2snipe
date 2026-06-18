@@ -1,8 +1,10 @@
 package licensesync
 
 import (
+	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -19,7 +21,7 @@ type stubLC struct {
 	nextSeat int
 }
 
-func (s *stubLC) EnsureLicense(spec snipe.LicenseSpec) (snipe.License, error) {
+func (s *stubLC) EnsureLicense(_ context.Context, spec snipe.LicenseSpec) (snipe.License, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.lic.ID == 0 {
@@ -27,7 +29,7 @@ func (s *stubLC) EnsureLicense(spec snipe.LicenseSpec) (snipe.License, error) {
 	}
 	return s.lic, nil
 }
-func (s *stubLC) EnsureSeats(licenseID, total int) error {
+func (s *stubLC) EnsureSeats(_ context.Context, licenseID, total int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for len(s.seats) < total {
@@ -37,7 +39,7 @@ func (s *stubLC) EnsureSeats(licenseID, total int) error {
 	s.lic.Seats = len(s.seats)
 	return nil
 }
-func (s *stubLC) ListSeats(licenseID int) ([]snipe.LicenseSeat, error) {
+func (s *stubLC) ListSeats(_ context.Context, licenseID int) ([]snipe.LicenseSeat, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]snipe.LicenseSeat(nil), s.seats...), nil
@@ -51,19 +53,19 @@ func (s *stubLC) setSeat(seatID, userID, assetID int) {
 		}
 	}
 }
-func (s *stubLC) CheckoutSeatToUser(licenseID, seatID, userID int) error {
+func (s *stubLC) CheckoutSeatToUser(_ context.Context, licenseID, seatID, userID int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.setSeat(seatID, userID, 0)
 	return nil
 }
-func (s *stubLC) CheckoutSeatToAsset(licenseID, seatID, assetID int) error {
+func (s *stubLC) CheckoutSeatToAsset(_ context.Context, licenseID, seatID, assetID int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.setSeat(seatID, 0, assetID)
 	return nil
 }
-func (s *stubLC) CheckinSeat(licenseID, seatID int) error {
+func (s *stubLC) CheckinSeat(_ context.Context, licenseID, seatID int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.setSeat(seatID, 0, 0)
@@ -81,7 +83,7 @@ func TestReconcileConcurrentCheckoutNoRace(t *testing.T) {
 	for i := range targets {
 		targets[i] = Target{IsUser: false, ID: 1000 + i}
 	}
-	st, err := e.Reconcile(snipe.LicenseSpec{Name: "Big", Reassignable: false, Seats: n}, targets)
+	st, err := e.Reconcile(context.Background(), snipe.LicenseSpec{Name: "Big", Reassignable: false, Seats: n}, targets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +117,7 @@ func TestReconcileConcurrentCheckinNoRace(t *testing.T) {
 		stub.seats = append(stub.seats, snipe.LicenseSeat{ID: i, AssignedUserID: 90000 + i})
 	}
 	e := New(stub, logrus.New(), WithConcurrency(8))
-	st, err := e.Reconcile(snipe.LicenseSpec{Name: "WS", Reassignable: true, Seats: n}, nil)
+	st, err := e.Reconcile(context.Background(), snipe.LicenseSpec{Name: "WS", Reassignable: true, Seats: n}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +139,7 @@ func TestReconcileReassignableCheckoutAndCheckin(t *testing.T) {
 	stub.nextSeat = 1
 	e := New(stub, logrus.New())
 	// desired: users 10 and 20 (not 99)
-	st, err := e.Reconcile(snipe.LicenseSpec{Name: "WS Plus", Reassignable: true, Seats: 1},
+	st, err := e.Reconcile(context.Background(), snipe.LicenseSpec{Name: "WS Plus", Reassignable: true, Seats: 1},
 		[]Target{{IsUser: true, ID: 10}, {IsUser: true, ID: 20}})
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +162,7 @@ func TestReconcilePerpetualAdditiveNoCheckin(t *testing.T) {
 	stub := &stubLC{lic: snipe.License{ID: 1, Name: "Chrome Perp", Seats: 1}, nextSeat: 1,
 		seats: []snipe.LicenseSeat{{ID: 1, AssignedAssetID: 99}}} // stale asset 99
 	e := New(stub, logrus.New())
-	st, err := e.Reconcile(snipe.LicenseSpec{Name: "Chrome Perp", Reassignable: false, Seats: 1},
+	st, err := e.Reconcile(context.Background(), snipe.LicenseSpec{Name: "Chrome Perp", Reassignable: false, Seats: 1},
 		[]Target{{IsUser: false, ID: 10}})
 	if err != nil {
 		t.Fatal(err)
@@ -183,30 +185,34 @@ func TestReconcilePerpetualAdditiveNoCheckin(t *testing.T) {
 // dryStub: license already EXISTS; all mutators are dry-run no-ops (ErrDryRun).
 type dryStub struct{ seats []snipe.LicenseSeat }
 
-func (d *dryStub) EnsureLicense(spec snipe.LicenseSpec) (snipe.License, error) {
+func (d *dryStub) EnsureLicense(_ context.Context, spec snipe.LicenseSpec) (snipe.License, error) {
 	return snipe.License{ID: 1, Name: spec.Name, Seats: len(d.seats)}, nil
 }
-func (d *dryStub) EnsureSeats(int, int) error                 { return snipe.ErrDryRun }
-func (d *dryStub) ListSeats(int) ([]snipe.LicenseSeat, error) { return d.seats, nil }
-func (d *dryStub) CheckoutSeatToUser(int, int, int) error     { return snipe.ErrDryRun }
-func (d *dryStub) CheckoutSeatToAsset(int, int, int) error    { return snipe.ErrDryRun }
-func (d *dryStub) CheckinSeat(int, int) error                 { return snipe.ErrDryRun }
+func (d *dryStub) EnsureSeats(context.Context, int, int) error                 { return snipe.ErrDryRun }
+func (d *dryStub) ListSeats(context.Context, int) ([]snipe.LicenseSeat, error) { return d.seats, nil }
+func (d *dryStub) CheckoutSeatToUser(context.Context, int, int, int) error     { return snipe.ErrDryRun }
+func (d *dryStub) CheckoutSeatToAsset(context.Context, int, int, int) error    { return snipe.ErrDryRun }
+func (d *dryStub) CheckinSeat(context.Context, int, int) error                 { return snipe.ErrDryRun }
 
 // createDryStub: license does NOT exist; EnsureLicense itself returns ErrDryRun.
 type createDryStub struct{}
 
-func (createDryStub) EnsureLicense(snipe.LicenseSpec) (snipe.License, error) {
+func (createDryStub) EnsureLicense(context.Context, snipe.LicenseSpec) (snipe.License, error) {
 	return snipe.License{}, snipe.ErrDryRun
 }
-func (createDryStub) EnsureSeats(int, int) error                 { return snipe.ErrDryRun }
-func (createDryStub) ListSeats(int) ([]snipe.LicenseSeat, error) { return nil, nil }
-func (createDryStub) CheckoutSeatToUser(int, int, int) error     { return snipe.ErrDryRun }
-func (createDryStub) CheckoutSeatToAsset(int, int, int) error    { return snipe.ErrDryRun }
-func (createDryStub) CheckinSeat(int, int) error                 { return snipe.ErrDryRun }
+func (createDryStub) EnsureSeats(context.Context, int, int) error { return snipe.ErrDryRun }
+func (createDryStub) ListSeats(context.Context, int) ([]snipe.LicenseSeat, error) {
+	return nil, nil
+}
+func (createDryStub) CheckoutSeatToUser(context.Context, int, int, int) error { return snipe.ErrDryRun }
+func (createDryStub) CheckoutSeatToAsset(context.Context, int, int, int) error {
+	return snipe.ErrDryRun
+}
+func (createDryStub) CheckinSeat(context.Context, int, int) error { return snipe.ErrDryRun }
 
 func TestReconcileDryRunCountsWithoutError(t *testing.T) {
 	d := &dryStub{seats: []snipe.LicenseSeat{{ID: 1}}} // one existing free seat
-	st, err := New(d, logrus.New()).Reconcile(
+	st, err := New(d, logrus.New()).Reconcile(context.Background(),
 		snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 1},
 		[]Target{{IsUser: true, ID: 10}, {IsUser: true, ID: 20}})
 	if err != nil {
@@ -218,7 +224,7 @@ func TestReconcileDryRunCountsWithoutError(t *testing.T) {
 }
 
 func TestReconcileDryRunCreate(t *testing.T) {
-	st, err := New(createDryStub{}, logrus.New()).Reconcile(
+	st, err := New(createDryStub{}, logrus.New()).Reconcile(context.Background(),
 		snipe.LicenseSpec{Name: "X", Reassignable: false, Seats: 0},
 		[]Target{{IsUser: false, ID: 1}, {IsUser: false, ID: 2}})
 	if err != nil {
@@ -232,7 +238,7 @@ func TestReconcileDryRunCreate(t *testing.T) {
 func TestReconcileDedupsDuplicateHolders(t *testing.T) {
 	stub := &stubLC{}
 	e := New(stub, logrus.New())
-	st, err := e.Reconcile(snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 1},
+	st, err := e.Reconcile(context.Background(), snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 1},
 		[]Target{{IsUser: true, ID: 10}, {IsUser: true, ID: 10}}) // same holder twice
 	if err != nil {
 		t.Fatal(err)
@@ -258,7 +264,7 @@ func TestReconcileReclaimsDuplicateSeats(t *testing.T) {
 		nextSeat: 2,
 	}
 	e := New(stub, logrus.New())
-	st, err := e.Reconcile(snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 2},
+	st, err := e.Reconcile(context.Background(), snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 2},
 		[]Target{{IsUser: true, ID: 10}})
 	if err != nil {
 		t.Fatal(err)
@@ -279,18 +285,64 @@ func TestReconcileReclaimsDuplicateSeats(t *testing.T) {
 
 type failCheckoutStub struct{ stubLC }
 
-func (s *failCheckoutStub) CheckoutSeatToUser(licenseID, seatID, userID int) error {
+func (s *failCheckoutStub) CheckoutSeatToUser(_ context.Context, licenseID, seatID, userID int) error {
 	return errors.New("boom")
 }
 
 func TestReconcileReturnsErrorOnRealCheckoutFailure(t *testing.T) {
 	e := New(&failCheckoutStub{}, logrus.New())
-	_, err := e.Reconcile(snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 1},
+	_, err := e.Reconcile(context.Background(), snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 1},
 		[]Target{{IsUser: true, ID: 10}})
 	if err == nil {
 		t.Fatal("expected reconcile to return the real checkout failure, got nil")
 	}
 	if err.Error() != "boom" {
 		t.Fatalf("expected the checkout error %q to propagate, got %v", "boom", err)
+	}
+}
+
+// countingLC records how many seat checkouts the engine issued so a cancellation test
+// can assert the parallelFor guard stopped dispatching new seat PATCHes.
+type countingLC struct {
+	stubLC
+	checkouts int32
+}
+
+func (c *countingLC) CheckoutSeatToUser(ctx context.Context, licenseID, seatID, userID int) error {
+	atomic.AddInt32(&c.checkouts, 1)
+	return c.stubLC.CheckoutSeatToUser(ctx, licenseID, seatID, userID)
+}
+func (c *countingLC) CheckoutSeatToAsset(ctx context.Context, licenseID, seatID, assetID int) error {
+	atomic.AddInt32(&c.checkouts, 1)
+	return c.stubLC.CheckoutSeatToAsset(ctx, licenseID, seatID, assetID)
+}
+
+// TestReconcilePreCancelledDoesNoCheckouts proves the engine-level guard: with an
+// already-cancelled context, Reconcile issues zero seat checkouts (the parallelFor
+// closure bails on ctx.Err()), so a Ctrl-C stops new work promptly.
+func TestReconcilePreCancelledDoesNoCheckouts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel before the run
+
+	// Plenty of free seats so the only reason no checkout happens is the cancellation.
+	stub := &countingLC{}
+	stub.lic = snipe.License{ID: 1, Name: "X", Seats: 100}
+	for i := 1; i <= 100; i++ {
+		stub.seats = append(stub.seats, snipe.LicenseSeat{ID: i})
+	}
+	stub.nextSeat = 100
+
+	e := New(stub, logrus.New(), WithConcurrency(8))
+	targets := make([]Target, 50)
+	for i := range targets {
+		targets[i] = Target{IsUser: true, ID: 1000 + i}
+	}
+	st, _ := e.Reconcile(ctx, snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 50}, targets)
+
+	if got := atomic.LoadInt32(&stub.checkouts); got != 0 {
+		t.Fatalf("issued %d checkouts under a cancelled context, want 0", got)
+	}
+	if st.CheckedOut != 0 {
+		t.Fatalf("CheckedOut = %d, want 0 under a cancelled context", st.CheckedOut)
 	}
 }

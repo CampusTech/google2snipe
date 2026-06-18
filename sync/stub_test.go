@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"testing"
@@ -34,10 +35,10 @@ type stubSnipe struct {
 	nextID       int
 }
 
-func (s *stubSnipe) GetAssetBySerial(serial string) ([]snipe.Asset, error) {
+func (s *stubSnipe) GetAssetBySerial(_ context.Context, serial string) ([]snipe.Asset, error) {
 	return s.bySerial[serial], nil
 }
-func (s *stubSnipe) CreateAsset(a snipe.Asset) (snipe.Asset, error) {
+func (s *stubSnipe) CreateAsset(_ context.Context, a snipe.Asset) (snipe.Asset, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
@@ -45,7 +46,7 @@ func (s *stubSnipe) CreateAsset(a snipe.Asset) (snipe.Asset, error) {
 	s.created = append(s.created, a)
 	return a, nil
 }
-func (s *stubSnipe) PatchAsset(id int, a snipe.Asset) (snipe.Asset, error) {
+func (s *stubSnipe) PatchAsset(_ context.Context, id int, a snipe.Asset) (snipe.Asset, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.patched == nil {
@@ -55,7 +56,7 @@ func (s *stubSnipe) PatchAsset(id int, a snipe.Asset) (snipe.Asset, error) {
 	s.patched[id] = a
 	return a, nil
 }
-func (s *stubSnipe) CheckoutAssetToUser(assetID, userID int) error {
+func (s *stubSnipe) CheckoutAssetToUser(_ context.Context, assetID, userID int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.checkouts == nil {
@@ -64,14 +65,14 @@ func (s *stubSnipe) CheckoutAssetToUser(assetID, userID int) error {
 	s.checkouts[assetID] = userID
 	return nil
 }
-func (s *stubSnipe) CheckinAsset(assetID int) error {
+func (s *stubSnipe) CheckinAsset(_ context.Context, assetID int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.checkins = append(s.checkins, assetID)
 	return nil
 }
-func (s *stubSnipe) ListAllModels() ([]snipe.Model, error) { return s.models, nil }
-func (s *stubSnipe) CreateModel(m snipe.Model) (snipe.Model, error) {
+func (s *stubSnipe) ListAllModels(_ context.Context) ([]snipe.Model, error) { return s.models, nil }
+func (s *stubSnipe) CreateModel(_ context.Context, m snipe.Model) (snipe.Model, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
@@ -79,8 +80,10 @@ func (s *stubSnipe) CreateModel(m snipe.Model) (snipe.Model, error) {
 	s.models = append(s.models, m)
 	return m, nil
 }
-func (s *stubSnipe) ListAllManufacturers() ([]snipe.Manufacturer, error) { return s.manufs, nil }
-func (s *stubSnipe) CreateManufacturer(name string) (snipe.Manufacturer, error) {
+func (s *stubSnipe) ListAllManufacturers(_ context.Context) ([]snipe.Manufacturer, error) {
+	return s.manufs, nil
+}
+func (s *stubSnipe) CreateManufacturer(_ context.Context, name string) (snipe.Manufacturer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nextID++
@@ -88,11 +91,11 @@ func (s *stubSnipe) CreateManufacturer(name string) (snipe.Manufacturer, error) 
 	s.manufs = append(s.manufs, m)
 	return m, nil
 }
-func (s *stubSnipe) ListAllUsers() ([]snipe.User, error) { return s.users, nil }
-func (s *stubSnipe) ListAllStatusLabels() ([]snipe.StatusLabel, error) {
+func (s *stubSnipe) ListAllUsers(_ context.Context) ([]snipe.User, error) { return s.users, nil }
+func (s *stubSnipe) ListAllStatusLabels(_ context.Context) ([]snipe.StatusLabel, error) {
 	return s.statusLabels, nil
 }
-func (s *stubSnipe) ListAllAssets() ([]snipe.Asset, error) {
+func (s *stubSnipe) ListAllAssets(_ context.Context) ([]snipe.Asset, error) {
 	var out []snipe.Asset
 	for _, list := range s.bySerial {
 		out = append(out, list...)

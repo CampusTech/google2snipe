@@ -1,6 +1,7 @@
 package licensesync
 
 import (
+	"context"
 	"time"
 
 	"github.com/CampusTech/google2snipe/config"
@@ -11,7 +12,7 @@ import (
 // SyncChrome reconciles ChromeOS device upgrade licenses: one Snipe License per
 // configured deviceLicenseType, a seat per device asset. Perpetual types are
 // non-reassignable (additive); recurring types reconcile + expire.
-func (e *Engine) SyncChrome(cfg config.LicensesConfig, devices []google.Device, assetIDBySerial func(string) (int, bool)) error {
+func (e *Engine) SyncChrome(ctx context.Context, cfg config.LicensesConfig, devices []google.Device, assetIDBySerial func(string) (int, bool)) error {
 	// group device assets by deviceLicenseType
 	byType := map[string][]Target{}
 	skipped := 0
@@ -50,7 +51,7 @@ func (e *Engine) SyncChrome(cfg config.LicensesConfig, devices []google.Device, 
 		if reassignable && cc.TermMonths > 0 {
 			spec.ExpirationDate = time.Now().UTC().AddDate(0, cc.TermMonths, 0).Format("2006-01-02")
 		}
-		st, err := e.Reconcile(spec, targets)
+		st, err := e.Reconcile(ctx, spec, targets)
 		if err != nil {
 			return err
 		}

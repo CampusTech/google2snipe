@@ -1,6 +1,8 @@
 package licensesync
 
 import (
+	"context"
+
 	"github.com/CampusTech/google2snipe/config"
 	"github.com/CampusTech/google2snipe/google"
 	"github.com/CampusTech/google2snipe/snipe"
@@ -8,7 +10,7 @@ import (
 
 // SyncWorkspace reconciles Workspace user subscriptions: one Snipe License per
 // SKU (reassignable), a seat per assigned user.
-func (e *Engine) SyncWorkspace(cfg config.LicensesConfig, assignments []google.LicenseAssignment, userIDByEmail func(string) (int, bool)) error {
+func (e *Engine) SyncWorkspace(ctx context.Context, cfg config.LicensesConfig, assignments []google.LicenseAssignment, userIDByEmail func(string) (int, bool)) error {
 	type skuInfo struct {
 		name    string
 		targets []Target
@@ -47,7 +49,7 @@ func (e *Engine) SyncWorkspace(cfg config.LicensesConfig, assignments []google.L
 			Reassignable: true,
 			Seats:        len(si.targets),
 		}
-		st, err := e.Reconcile(spec, si.targets)
+		st, err := e.Reconcile(ctx, spec, si.targets)
 		if err != nil {
 			return err
 		}

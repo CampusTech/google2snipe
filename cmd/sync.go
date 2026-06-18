@@ -76,7 +76,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	engine := syncpkg.New(cfg, newCachingSnipe(sc, cfg.Sync.UseCache, cfg.Sync.CacheDir, snipeLog), syncLog)
-	if err := engine.Warm(); err != nil {
+	if err := engine.Warm(cmd.Context()); err != nil {
 		return fmt.Errorf("warm caches: %w", err)
 	}
 
@@ -87,12 +87,17 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if syncSerial != "" {
 		devs = filterSerial(devs, syncSerial)
 	}
-	engine.SyncAll(devs)
+	engine.SyncAll(cmd.Context(), devs)
 	stats := engine.StatsSnapshot()
 	syncLog.WithFields(logrus.Fields{
 		"total": stats.Total, "created": stats.Created, "updated": stats.Updated,
 		"skipped": stats.Skipped, "errors": stats.Errors,
 	}).Warn("done")
+	// A cancelled run (Ctrl-C) is reported as an error so it exits non-zero, even though
+	// SyncAll itself returns no error and cancelled devices are counted as skipped, not errors.
+	if err := cmd.Context().Err(); err != nil {
+		return err
+	}
 	if stats.Errors > 0 {
 		return fmt.Errorf("%d device(s) failed to sync", stats.Errors)
 	}

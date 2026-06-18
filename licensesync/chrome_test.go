@@ -1,6 +1,7 @@
 package licensesync
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -46,7 +47,7 @@ func TestSyncChromePerpetualPerDeviceAsset(t *testing.T) {
 		devWith(t, "S3", ""), // no license -> skipped
 	}
 	assetID := map[string]int{"S1": 101, "S2": 102}
-	err := e.SyncChrome(cfg, devs, func(serial string) (int, bool) { id, ok := assetID[serial]; return id, ok })
+	err := e.SyncChrome(context.Background(), cfg, devs, func(serial string) (int, bool) { id, ok := assetID[serial]; return id, ok })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,9 +69,9 @@ type recordingLC struct {
 	specs []snipe.LicenseSpec
 }
 
-func (r *recordingLC) EnsureLicense(spec snipe.LicenseSpec) (snipe.License, error) {
+func (r *recordingLC) EnsureLicense(ctx context.Context, spec snipe.LicenseSpec) (snipe.License, error) {
 	r.specs = append(r.specs, spec)
-	return r.stubLC.EnsureLicense(spec)
+	return r.stubLC.EnsureLicense(ctx, spec)
 }
 
 // TestSyncChromeSetsReassignableFromType guards the central perpetual-vs-recurring
@@ -91,7 +92,7 @@ func TestSyncChromeSetsReassignableFromType(t *testing.T) {
 		devWith(t, "R1", "enterpriseUpgradeFixedTerm"),
 	}
 	asset := map[string]int{"P1": 201, "R1": 202}
-	if err := e.SyncChrome(cfg, devs, func(s string) (int, bool) { id, ok := asset[s]; return id, ok }); err != nil {
+	if err := e.SyncChrome(context.Background(), cfg, devs, func(s string) (int, bool) { id, ok := asset[s]; return id, ok }); err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]bool{}
