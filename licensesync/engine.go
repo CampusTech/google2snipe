@@ -125,6 +125,9 @@ func (e *Engine) Reconcile(ctx context.Context, spec snipe.LicenseSpec, desired 
 	}
 
 	var st Stats
+	if err := ctx.Err(); err != nil {
+		return st, err
+	}
 	lic, err := e.lc.EnsureLicense(ctx, spec)
 	if isDryRun(err) {
 		e.log.WithField("license", spec.Name).WithField("would_seat", len(desired)).
@@ -228,6 +231,11 @@ func (e *Engine) Reconcile(ctx context.Context, spec snipe.LicenseSpec, desired 
 			}
 		}
 	}
+	// Bail out cleanly if the check-in phase was cancelled, rather than proceeding to grow
+	// seats and check out holders under a cancelled context.
+	if err := ctx.Err(); err != nil {
+		return st, err
+	}
 
 	// 2) Determine holders that still need a seat. A desired holder that currently holds at
 	//    least one seat is already OK (reclaim above only removed unwanted holders / surplus
@@ -314,6 +322,11 @@ func (e *Engine) Reconcile(ctx context.Context, spec snipe.LicenseSpec, desired 
 				recordErr(coErr[i])
 			}
 		}
+	}
+	// If the checkout phase was cancelled, report the cancellation rather than a clean
+	// reconcile (cancelled workers leave their slots zero-valued, so firstErr can be nil).
+	if err := ctx.Err(); err != nil {
+		return st, err
 	}
 	for _, t := range need[k:] {
 		if growthDryRun {

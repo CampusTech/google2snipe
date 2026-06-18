@@ -369,25 +369,38 @@ func TestEnsureLicenseUpdatesExisting(t *testing.T) {
 	}
 }
 
-// TestLicenseClientCancelAbortsBackoff proves the cancellation contract: when the
-// context is cancelled on the first 429 (with Retry-After: 1 it would otherwise sleep
-// a full second before retrying), do()'s cancel-aware backoff returns promptly with
-// context.Canceled instead of waiting out the backoff. The handler cancels the request's
-// own context after answering the first hit so the in-flight retry sleep is interrupted.
+// TestLicenseClientCancelAbortsBackoff proves the cancellation contract: with Retry-After: 1
+// the client would otherwise sleep a full second before retrying, but a cancel that arrives
+// while it is in that backoff sleep makes do()'s cancel-aware select return promptly with
+// context.Canceled. The cancel is fired from a goroutine AFTER the first 429 is delivered
+// (not inside the handler) so we exercise the backoff-abort path, not an in-flight request
+// cancellation.
 func TestLicenseClientCancelAbortsBackoff(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var calls int32
+	first429 := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
-		// Cancel the run on the first hit, then return a 429 with a 1s Retry-After. The
-		// client would normally sleep ~1s before retrying; the cancel must cut it short.
-		cancel()
+		n := atomic.AddInt32(&calls, 1)
 		w.Header().Set("Retry-After", "1")
 		w.WriteHeader(http.StatusTooManyRequests)
+		if n == 1 {
+			select {
+			case first429 <- struct{}{}:
+			default:
+			}
+		}
 	}))
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+
+	// Cancel only once the first 429 has been returned and the client has had a moment to
+	// enter the ~1s Retry-After backoff sleep.
+	go func() {
+		<-first429
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
 
 	start := time.Now()
 	err := c.EnsureSeats(ctx, 1, 5) // first call (GET seat-count) rides the 429 retry path
@@ -396,8 +409,8 @@ func TestLicenseClientCancelAbortsBackoff(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if elapsed >= 200*time.Millisecond {
-		t.Fatalf("took %v, want < 200ms (cancel must abort the Retry-After backoff promptly)", elapsed)
+	if elapsed >= 500*time.Millisecond {
+		t.Fatalf("took %v, want well under the 1s Retry-After (cancel must abort the backoff)", elapsed)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("server saw %d calls, want exactly 1 (no retry after cancel)", got)

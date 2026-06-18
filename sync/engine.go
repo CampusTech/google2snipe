@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strings"
 	"sync"
@@ -309,6 +310,10 @@ func (e *Engine) lookupUser(email string) (int, bool) {
 // SyncAll reconciles every device through a bounded worker pool and returns run
 // statistics. It is not safe to call concurrently with itself or StatsSnapshot.
 func (e *Engine) SyncAll(ctx context.Context, devs []google.Device) Stats {
+	if err := ctx.Err(); err != nil {
+		e.log.WithError(err).Info("sync cancelled before dispatch")
+		return e.stats
+	}
 	workers := e.cfg.Sync.Concurrency
 	if workers < 1 {
 		workers = 1
@@ -329,6 +334,11 @@ func (e *Engine) SyncAll(ctx context.Context, devs []google.Device) Stats {
 	// the workers drain whatever they already picked up and exit, instead of queueing
 	// the rest of the device list.
 	for _, d := range devs {
+		// Explicit check first: a bare select can still pick the send when ctx.Done() is
+		// also ready (both cases selectable), so a cancelled run could otherwise dispatch more.
+		if ctx.Err() != nil {
+			goto drain
+		}
 		select {
 		case jobs <- d:
 		case <-ctx.Done():
@@ -380,6 +390,12 @@ func (e *Engine) syncDevice(ctx context.Context, dev google.Device, st *Stats) {
 	}
 }
 
+// isContextErr reports whether err is a context cancellation/deadline, i.e. a graceful
+// Ctrl-C shutdown rather than a real sync failure.
+func isContextErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 func (e *Engine) createDev(ctx context.Context, dev google.Device, l *logrus.Entry, st *Stats) {
 	if e.cfg.Sync.DryRun {
 		l.WithField("model", dev.Model).Info("[DRY RUN] would create asset")
@@ -388,6 +404,11 @@ func (e *Engine) createDev(ctx context.Context, dev google.Device, l *logrus.Ent
 	}
 	modelID, err := e.ensureModel(ctx, dev)
 	if err != nil {
+		if isContextErr(err) {
+			l.WithError(err).Debug("cancelled during model resolution")
+			st.Skipped++
+			return
+		}
 		l.WithError(err).Error("ensure model failed")
 		st.Errors++
 		return
@@ -414,6 +435,11 @@ func (e *Engine) createDev(ctx context.Context, dev google.Device, l *logrus.Ent
 	}
 	created, err := e.snipe.CreateAsset(ctx, asset)
 	if err != nil {
+		if isContextErr(err) {
+			l.WithError(err).Debug("cancelled during create")
+			st.Skipped++
+			return
+		}
 		l.WithError(err).Error("create asset failed")
 		st.Errors++
 		return
@@ -439,6 +465,11 @@ func (e *Engine) updateDev(ctx context.Context, dev google.Device, existing snip
 	}
 	modelID, err := e.ensureModel(ctx, dev)
 	if err != nil {
+		if isContextErr(err) {
+			l.WithError(err).Debug("cancelled during model resolution")
+			st.Skipped++
+			return
+		}
 		l.WithError(err).Error("ensure model failed")
 		st.Errors++
 		return
@@ -452,6 +483,11 @@ func (e *Engine) updateDev(ctx context.Context, dev google.Device, existing snip
 		patch.Name = e.renderName(dev)
 	}
 	if _, err := e.snipe.PatchAsset(ctx, existing.ID, patch); err != nil {
+		if isContextErr(err) {
+			l.WithError(err).Debug("cancelled during update")
+			st.Skipped++
+			return
+		}
 		l.WithError(err).Error("update asset failed")
 		st.Errors++
 		return

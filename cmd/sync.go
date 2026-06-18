@@ -93,6 +93,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 		"total": stats.Total, "created": stats.Created, "updated": stats.Updated,
 		"skipped": stats.Skipped, "errors": stats.Errors,
 	}).Warn("done")
+	// A cancelled run (Ctrl-C) is reported as an error so it exits non-zero, even though
+	// SyncAll itself returns no error and cancelled devices are counted as skipped, not errors.
+	if err := cmd.Context().Err(); err != nil {
+		return err
+	}
 	if stats.Errors > 0 {
 		return fmt.Errorf("%d device(s) failed to sync", stats.Errors)
 	}

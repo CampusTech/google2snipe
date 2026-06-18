@@ -81,6 +81,12 @@ func Execute() {
 	rootCmd.Version = Version
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// Once the first signal cancels ctx, restore default signal handling so a second Ctrl-C
+	// force-quits immediately if graceful shutdown hangs (stop is idempotent).
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		log.WithError(err).Error("command failed")
 		os.Exit(1)
