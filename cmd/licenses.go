@@ -99,7 +99,7 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 		}
 		// Index Snipe users by full lowercased email, plus an unambiguous local-part
 		// (before-@) index so a Workspace user can still match a Snipe user under a
-		// different domain (e.g. alice@my.campus.edu -> alice@campus.edu). Local parts
+		// different domain (e.g. alice@students.example.com -> alice@example.com). Local parts
 		// shared by more than one distinct user are marked ambiguous and never matched.
 		idx := map[string]int{}
 		localPart := map[string]int{}
