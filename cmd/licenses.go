@@ -93,25 +93,46 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		// reuse the sync engine's Warm user index via a fresh engine, or load users directly:
 		users, err := newCachingSnipe(sc, cfg.Sync.UseCache, cfg.Sync.CacheDir, snipeLog).ListAllUsers()
 		if err != nil {
 			return err
 		}
+		// Index Snipe users by full lowercased email, plus an unambiguous local-part
+		// (before-@) index so a Workspace user can still match a Snipe user under a
+		// different domain (e.g. alice@my.campus.edu -> alice@campus.edu). Local parts
+		// shared by more than one distinct user are marked ambiguous and never matched.
 		idx := map[string]int{}
+		localPart := map[string]int{}
+		ambiguous := map[string]bool{}
 		for _, u := range users {
-			if u.Email != "" {
-				idx[strings.ToLower(u.Email)] = u.ID
+			if u.Email == "" {
+				continue
+			}
+			e := strings.ToLower(u.Email)
+			idx[e] = u.ID
+			if i := strings.IndexByte(e, '@'); i > 0 {
+				lp := e[:i]
+				if prev, seen := localPart[lp]; seen && prev != u.ID {
+					ambiguous[lp] = true
+				} else {
+					localPart[lp] = u.ID
+				}
 			}
 		}
 		userIDByEmail := func(email string) (int, bool) {
-			id, ok := idx[strings.ToLower(email)]
-			if !ok {
-				if i := strings.IndexByte(strings.ToLower(email), '@'); i > 0 {
-					id, ok = idx[strings.ToLower(email)[:i]]
+			e := strings.ToLower(email)
+			if id, ok := idx[e]; ok {
+				return id, true
+			}
+			if i := strings.IndexByte(e, '@'); i > 0 {
+				lp := e[:i]
+				if !ambiguous[lp] {
+					if id, ok := localPart[lp]; ok {
+						return id, true
+					}
 				}
 			}
-			return id, ok
+			return 0, false
 		}
 		if err := engine.SyncWorkspace(cfg.Licenses, asg, userIDByEmail); err != nil {
 			return err
