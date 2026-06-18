@@ -1,7 +1,9 @@
 package snipe
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -96,5 +98,36 @@ func TestEnsureLicenseDryRunSkipsCreate(t *testing.T) {
 	}
 	if posted {
 		t.Fatal("dry-run EnsureLicense must not POST")
+	}
+}
+
+func TestEnsureLicenseUpdatesExisting(t *testing.T) {
+	var patched map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/licenses", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":1,"rows":[{"id":7,"name":"X","seats":3}]}`))
+	})
+	mux.HandleFunc("/api/v1/licenses/7", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &patched)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"success","payload":{}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false /*not dry-run*/, logrus.New())
+	lic, err := c.EnsureLicense(LicenseSpec{Name: "X", CostPerSeat: 9.99, CategoryID: 2, Reassignable: true, Seats: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lic.ID != 7 {
+		t.Fatalf("want existing id 7, got %d", lic.ID)
+	}
+	if patched == nil {
+		t.Fatal("existing license was not updated (no PATCH issued)")
+	}
+	if patched["purchase_cost"] != 9.99 {
+		t.Errorf("purchase_cost = %v, want 9.99", patched["purchase_cost"])
 	}
 }

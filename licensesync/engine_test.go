@@ -157,3 +157,25 @@ func TestReconcileDryRunCreate(t *testing.T) {
 		t.Errorf("CheckedOut = %d, want 2", st.CheckedOut)
 	}
 }
+
+func TestReconcileDedupsDuplicateHolders(t *testing.T) {
+	stub := &stubLC{}
+	e := New(stub, logrus.New())
+	st, err := e.Reconcile(snipe.LicenseSpec{Name: "X", Reassignable: true, Seats: 1},
+		[]Target{{IsUser: true, ID: 10}, {IsUser: true, ID: 10}}) // same holder twice
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, s := range stub.seats {
+		if s.AssignedUserID == 10 {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("user 10 seated %d times, want 1", count)
+	}
+	if st.CheckedOut != 1 {
+		t.Errorf("CheckedOut = %d, want 1", st.CheckedOut)
+	}
+}

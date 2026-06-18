@@ -139,6 +139,36 @@ func (c *LicenseClient) ListLicenses() ([]License, error) {
 	return out, nil
 }
 
+// updateLicense PATCHes the mutable fields of an existing license so config changes
+// (cost, category, reassignable, expiration) propagate on re-sync. config is source of truth.
+func (c *LicenseClient) updateLicense(id int, spec LicenseSpec) error {
+	body := map[string]any{
+		"purchase_cost": spec.CostPerSeat,
+		"category_id":   spec.CategoryID,
+		"reassignable":  spec.Reassignable,
+	}
+	if spec.ExpirationDate != "" {
+		body["expiration_date"] = spec.ExpirationDate
+	} else {
+		body["expiration_date"] = nil
+	}
+	raw, status, err := c.do(http.MethodPatch, fmt.Sprintf("/licenses/%d", id), body)
+	if err != nil {
+		return err
+	}
+	if err := check2xx(status, raw, fmt.Sprintf("updating license %d", id)); err != nil {
+		return err
+	}
+	var r snipeResp
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return fmt.Errorf("updating license %d: %w", id, err)
+	}
+	if r.Status != "success" {
+		return fmt.Errorf("updating license %d: %s", id, string(r.Messages))
+	}
+	return nil
+}
+
 // EnsureLicense finds a license by name or creates it. On create it sets the
 // category, seats, cost, reassignable flag, and (optional) expiration.
 func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
@@ -148,6 +178,11 @@ func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
 	}
 	for _, l := range existing {
 		if strings.EqualFold(l.Name, spec.Name) {
+			if !c.dryRun {
+				if err := c.updateLicense(l.ID, spec); err != nil {
+					return License{}, err
+				}
+			}
 			return l, nil
 		}
 	}

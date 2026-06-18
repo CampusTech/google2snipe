@@ -48,6 +48,25 @@ func isDryRun(err error) bool { return errors.Is(err, snipe.ErrDryRun) }
 // never reclaim seats. In dry-run, mutating client methods return snipe.ErrDryRun;
 // Reconcile then logs the intended change and counts it without aborting.
 func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, error) {
+	// Deduplicate desired holders so the same user/asset is never seated twice
+	// (e.g. two Workspace emails resolving to one Snipe user via the local-part fallback).
+	if len(desired) > 1 {
+		seen := make(map[[2]int]bool, len(desired))
+		deduped := desired[:0:0]
+		for _, t := range desired {
+			k := [2]int{0, t.ID}
+			if t.IsUser {
+				k[0] = 1
+			}
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			deduped = append(deduped, t)
+		}
+		desired = deduped
+	}
+
 	var st Stats
 	lic, err := e.lc.EnsureLicense(spec)
 	if isDryRun(err) {
