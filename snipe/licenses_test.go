@@ -145,9 +145,15 @@ func TestEnsureLicenseClampsCreateSeats(t *testing.T) {
 	createSeats := -1.0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet { // ListLicenses -> empty so a create is attempted
+			if r.URL.Path != "/api/v1/licenses" {
+				t.Errorf("list path = %q, want /api/v1/licenses", r.URL.Path)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"total":0,"rows":[]}`))
 			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/licenses" {
+			t.Errorf("create request = %s %q, want POST /api/v1/licenses", r.Method, r.URL.Path)
 		}
 		var body map[string]any // POST /licenses
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -172,9 +178,15 @@ func TestEnsureSeatsStepsPastChangeLimit(t *testing.T) {
 	var patched []int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet { // GET /licenses/{id} -> current seat total
+			if r.URL.Path != "/api/v1/licenses/7" {
+				t.Errorf("get path = %q, want /api/v1/licenses/7", r.URL.Path)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":7,"seats":10000}`))
 			return
+		}
+		if r.Method != http.MethodPatch || r.URL.Path != "/api/v1/licenses/7" {
+			t.Errorf("grow request = %s %q, want PATCH /api/v1/licenses/7", r.Method, r.URL.Path)
 		}
 		var body map[string]any // PATCH /licenses/{id}
 		_ = json.NewDecoder(r.Body).Decode(&body)
