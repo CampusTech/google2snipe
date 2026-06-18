@@ -306,6 +306,8 @@ These three steps are required before enabling the license sync:
 
 Google exposes no pricing API — not even the Reseller or Cloud Channel APIs surface per-seat costs for direct customers. Costs are captured once, interactively, via `google2snipe licenses setup` and stored in `settings.yaml`. Update them there when your subscription pricing changes.
 
+License costs are recorded as the **per-seat** price on each Snipe-IT License (so a user's assigned license seat reflects that user's per-seat cost); the License's total-cost field therefore reflects the per-seat unit, not the full subscription total.
+
 ### Commands
 
 #### `google2snipe licenses setup` — discover and price
@@ -318,7 +320,7 @@ Run this once (and again when your subscriptions change) to build the `licenses:
 
 This command is **interactive**:
 
-1. Reads all ChromeOS devices (from the API or `--use-cache`) and collects every distinct `deviceLicenseType` found.
+1. Reads all ChromeOS devices (from the Google Admin API, or the local cache when `sync.use_cache: true` is set in the config) and collects every distinct `deviceLicenseType` found.
 2. Calls the **Enterprise License Manager API** to list all active Workspace SKU assignments across your domain.
 3. For each discovered Chrome upgrade type and Workspace SKU, prompts you for the per-seat cost in USD.
 4. Writes the resulting `licenses:` block into `settings.yaml` (comments preserved) and sets `licenses.enabled: true`.

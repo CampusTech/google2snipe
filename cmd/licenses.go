@@ -85,11 +85,7 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(cfg.Licenses.Workspace.Products) > 0 {
-		gl, err := google.NewLicensingClient(cfg.Google, cfg.Licenses.Workspace.CustomerID, licLog)
-		if err != nil {
-			return err
-		}
-		asg, err := loadAssignments(cmd.Context(), cfg, gl)
+		asg, err := loadAssignments(cmd.Context(), cfg, licLog)
 		if err != nil {
 			return err
 		}
@@ -143,12 +139,16 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func loadAssignments(ctx context.Context, cfg *config.Config, gl *google.LicensingClient) ([]google.LicenseAssignment, error) {
+func loadAssignments(ctx context.Context, cfg *config.Config, logger *logrus.Logger) ([]google.LicenseAssignment, error) {
 	path := filepath.Join(cfg.Sync.CacheDir, "license_assignments.json")
 	if cfg.Sync.UseCache {
 		if data, err := os.ReadFile(path); err == nil {
 			return google.DeserializeAssignments(data)
 		}
+	}
+	gl, err := google.NewLicensingClient(cfg.Google, cfg.Licenses.Workspace.CustomerID, logger)
+	if err != nil {
+		return nil, err
 	}
 	asg, err := gl.ListAssignments(ctx, cfg.Licenses.Workspace.Products)
 	if err != nil {

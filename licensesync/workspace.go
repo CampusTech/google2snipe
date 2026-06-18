@@ -14,10 +14,12 @@ func (e *Engine) SyncWorkspace(cfg config.LicensesConfig, assignments []google.L
 		targets []Target
 	}
 	bySKU := map[string]*skuInfo{}
+	skipped := 0
 	for _, a := range assignments {
 		uid, ok := userIDByEmail(a.UserEmail)
 		if !ok {
 			e.log.WithField("email", a.UserEmail).Debug("no Snipe user; skipping license seat")
+			skipped++
 			continue
 		}
 		si := bySKU[a.SKUID]
@@ -29,6 +31,9 @@ func (e *Engine) SyncWorkspace(cfg config.LicensesConfig, assignments []google.L
 			si.name = a.SKUName
 		}
 		si.targets = append(si.targets, Target{IsUser: true, ID: uid})
+	}
+	if skipped > 0 {
+		e.log.WithField("skipped", skipped).Warn("workspace: users skipped (no matching Snipe-IT account)")
 	}
 	for skuID, si := range bySKU {
 		name := si.name
@@ -47,7 +52,7 @@ func (e *Engine) SyncWorkspace(cfg config.LicensesConfig, assignments []google.L
 			return err
 		}
 		e.log.WithField("license", name).WithField("checked_out", st.CheckedOut).
-			WithField("checked_in", st.CheckedIn).Info("workspace license reconciled")
+			WithField("checked_in", st.CheckedIn).Warn("workspace license reconciled")
 	}
 	return nil
 }

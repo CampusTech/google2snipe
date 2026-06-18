@@ -14,6 +14,7 @@ import (
 func (e *Engine) SyncChrome(cfg config.LicensesConfig, devices []google.Device, assetIDBySerial func(string) (int, bool)) error {
 	// group device assets by deviceLicenseType
 	byType := map[string][]Target{}
+	skipped := 0
 	for _, d := range devices {
 		lt := d.DeviceLicenseType
 		if lt == "" || lt == "deviceLicenseTypeUnspecified" {
@@ -25,9 +26,13 @@ func (e *Engine) SyncChrome(cfg config.LicensesConfig, devices []google.Device, 
 		assetID, ok := assetIDBySerial(d.SerialNumber)
 		if !ok {
 			e.log.WithField("serial", d.SerialNumber).Debug("device not yet a Snipe asset; skipping license seat")
+			skipped++
 			continue
 		}
 		byType[lt] = append(byType[lt], Target{IsUser: false, ID: assetID})
+	}
+	if skipped > 0 {
+		e.log.WithField("skipped", skipped).Warn("chrome: devices skipped (no matching Snipe asset yet)")
 	}
 	for lt, targets := range byType {
 		cc := cfg.Chrome[lt]
@@ -50,7 +55,7 @@ func (e *Engine) SyncChrome(cfg config.LicensesConfig, devices []google.Device, 
 			return err
 		}
 		e.log.WithField("license", cc.Name).WithField("checked_out", st.CheckedOut).
-			WithField("checked_in", st.CheckedIn).Info("chrome license reconciled")
+			WithField("checked_in", st.CheckedIn).Warn("chrome license reconciled")
 	}
 	return nil
 }

@@ -77,6 +77,9 @@ func runLicensesSetup(cmd *cobra.Command, args []string) error {
 		if prev, ok := cfg.Licenses.Chrome[t]; ok {
 			cc.Reassignable = prev.Reassignable
 			cc.TermMonths = prev.TermMonths
+			if prev.Name != "" {
+				cc.Name = prev.Name
+			}
 		}
 		out.Chrome[t] = cc
 	}
