@@ -43,8 +43,12 @@ writes the `licenses:` config block.
   a device, aren't reclaimable, and aren't idempotent per-device — a poor fit. A
   Snipe License with `reassignable: false` models a perpetual/one-time license
   correctly instead.)
-- No attempt to read prices from Google (the APIs don't expose cost). Costs are
-  config-provided.
+- No attempt to read prices from Google. The Licensing/Directory APIs return
+  assignments, not cost, and the **Reseller (`reseller/v1`) and Cloud Channel APIs
+  are partner-only and still expose no per-seat price** for a direct customer — so
+  costs are config-provided (captured once by the interactive `licenses setup`
+  quiz). The authoritative price source is the contract / Admin billing / reseller
+  invoice, not an API.
 - No license *provisioning* (we never assign/revoke Google licenses) — read-only on
   the Google side, write-only of seat checkouts on the Snipe side.
 
