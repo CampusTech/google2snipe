@@ -2,6 +2,7 @@ package snipe
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -103,7 +104,10 @@ func (c *LicenseClient) do(method, path string, body any) ([]byte, int, error) {
 		if bodyBytes != nil {
 			rdr = bytes.NewReader(bodyBytes)
 		}
-		req, err := http.NewRequest(method, c.baseURL+"/api/v1"+path, rdr)
+		// context.Background() matches the existing asset client (snipe/client.go), which also
+		// does not thread a caller context yet; this satisfies noctx and leaves a clean seam
+		// for a future caller-supplied context to enable graceful cancellation.
+		req, err := http.NewRequestWithContext(context.Background(), method, c.baseURL+"/api/v1"+path, rdr)
 		if err != nil {
 			return nil, 0, err
 		}
