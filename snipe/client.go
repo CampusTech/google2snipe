@@ -139,29 +139,45 @@ func New(url, apiKey string, dryRun, rateLimit bool, logger *logrus.Logger) (*Cl
 	return &Client{sc: sc, dryRun: dryRun, logger: logger}, nil
 }
 
-// retry429 runs fn and, if the HTTP response is a 429 Too Many Requests,
-// sleeps for the Retry-After duration (or exponential backoff starting at
-// 500 ms, capped at 30 s) and retries up to 6 attempts total. Any other
-// error (or a nil response) is returned immediately.
+// retry429 runs fn and retries transient failures — HTTP 429 (honoring
+// Retry-After), HTTP 5xx, and network/connection errors — with backoff
+// (Retry-After when present and non-negative, else exponential from 500 ms ×2
+// capped at 30 s), up to 6 attempts total. Context cancellation/deadline and
+// any non-transient (e.g. 4xx) error are returned immediately. go-snipeit's own
+// retry policy is disabled (see New's DisableRetries) so this layer owns all
+// retry behavior — replacing the SDK's 429+5xx+connection retries.
 func (c *Client) retry429(op string, fn func() (*http.Response, error)) error {
 	const maxAttempts = 6
 	backoff := 500 * time.Millisecond
 	for attempt := 1; ; attempt++ {
 		resp, err := fn()
-		if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		retryable := false
+		switch {
+		case resp != nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500):
+			retryable = true
+		case resp == nil && err != nil &&
+			!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded):
+			retryable = true // transient network/connection error
+		}
+		if !retryable {
 			return err
 		}
 		if attempt >= maxAttempts {
-			return fmt.Errorf("%s: still rate-limited after %d attempts: %w", op, maxAttempts, err)
+			if err != nil {
+				return fmt.Errorf("%s: failed after %d attempts: %w", op, maxAttempts, err)
+			}
+			return fmt.Errorf("%s: failed after %d attempts (HTTP %d)", op, maxAttempts, resp.StatusCode)
 		}
 		wait := backoff
-		if ra := resp.Header.Get("Retry-After"); ra != "" {
-			if secs, perr := strconv.Atoi(strings.TrimSpace(ra)); perr == nil {
-				wait = time.Duration(secs) * time.Second
+		if resp != nil {
+			if ra := resp.Header.Get("Retry-After"); ra != "" {
+				if secs, perr := strconv.Atoi(strings.TrimSpace(ra)); perr == nil && secs >= 0 {
+					wait = time.Duration(secs) * time.Second
+				}
 			}
 		}
 		c.logger.WithFields(logrus.Fields{"op": op, "attempt": attempt, "wait": wait.String()}).
-			Warn("snipe 429; backing off")
+			Warn("snipe request failed (429/5xx/transient); backing off")
 		time.Sleep(wait)
 		if backoff *= 2; backoff > 30*time.Second {
 			backoff = 30 * time.Second

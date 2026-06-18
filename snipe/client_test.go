@@ -51,6 +51,34 @@ func TestCreateAssetRetriesOn429(t *testing.T) {
 	}
 }
 
+func TestCreateAssetRetriesOn5xx(t *testing.T) {
+	var n int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if atomic.AddInt32(&n, 1) == 1 {
+			w.WriteHeader(503)
+			_, _ = w.Write([]byte(`{"status":"error","messages":"unavailable"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"success","payload":{"id":8,"asset_tag":"A","serial":"S"}}`))
+	}))
+	defer srv.Close()
+	c, err := New(srv.URL, "k", false, false, logrus.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := c.CreateAsset(Asset{Serial: "S", ModelID: 1, StatusID: 1})
+	if err != nil {
+		t.Fatalf("expected success after 503 retry, got %v", err)
+	}
+	if a.ID != 8 {
+		t.Fatalf("asset id = %d, want 8", a.ID)
+	}
+	if atomic.LoadInt32(&n) < 2 {
+		t.Fatalf("expected a retry on 503 (>=2 requests), got %d", n)
+	}
+}
+
 func TestListAllAssetsPaginates(t *testing.T) {
 	page1 := `{"total":2,"rows":[{"id":1,"asset_tag":"A1","serial":"S1"}]}`
 	page2 := `{"total":2,"rows":[{"id":2,"asset_tag":"A2","serial":"S2"}]}`
