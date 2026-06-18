@@ -74,7 +74,7 @@ Set credentials via `settings.yaml` or env vars:
 ./google2snipe sync --serial 5CD1234ABC      # one device by serial number
 ./google2snipe sync --device-id <google-id>  # one device by Google deviceId
 ./google2snipe sync --update-only            # never create new assets, only update
-./google2snipe sync --use-cache              # replay the last fetch from .cache/devices.json
+./google2snipe sync --use-cache              # replay devices + Snipe users from .cache/ (no list re-fetch)
 ./google2snipe sync --projection basic       # opt down from the default FULL projection
 ```
 
@@ -241,7 +241,7 @@ sync:
 - **Names:** off by default. Set `sync.set_name: true` with an optional `sync.name_template` (default `"{annotatedAssetId}"`, falling back to the serial) to sync the asset name.
 - **Model & manufacturer:** the Snipe-IT model is auto-created from the `model` string. ChromeOS has no separate vendor field, so the manufacturer is derived from the **first token** of the model (e.g. `Lenovo` from `Lenovo 300e Chromebook`), resolved against `snipe_it.manufacturer_ids` (lowercased vendor → ID), auto-created if absent, or `snipe_it.default_manufacturer_id` as a fallback.
 - **Custom-field rejection retry:** if Snipe-IT rejects fields with "not available on this Asset Model's fieldset", the bad keys are stripped and the PATCH is retried once so the rest applies. Re-run `setup` to fix the underlying fieldset.
-- **Cache:** every fetch writes `.cache/devices.json`; `--use-cache` replays it without hitting the API (raw JSON is restored so gjson mapping still works offline).
+- **Cache:** every fetch writes `.cache/devices.json` (ChromeOS devices) and `.cache/users.json` (the Snipe-IT user list used for checkout matching); `--use-cache` replays both without re-paginating the APIs (device raw JSON is restored so gjson mapping still works). Models and manufacturers are always fetched fresh, since they're created during syncs.
 - **Rate limiting:** Snipe-IT writes go through a token-bucket limiter (`sync.rate_limit: true`).
 
 ## Configuration reference

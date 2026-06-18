@@ -70,7 +70,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	engine := syncpkg.New(cfg, sc, syncLog)
+	engine := syncpkg.New(cfg, newCachingSnipe(sc, cfg.Sync.UseCache, cfg.Sync.CacheDir, snipeLog), syncLog)
 	if err := engine.Warm(); err != nil {
 		return fmt.Errorf("warm caches: %w", err)
 	}
