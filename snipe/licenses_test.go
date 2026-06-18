@@ -36,6 +36,49 @@ func TestEnsureLicenseSurfacesHTTPError(t *testing.T) {
 	}
 }
 
+func TestSeatMutatorsDryRun(t *testing.T) {
+	c := NewLicenseClient("https://snipe.invalid", "k", true /*dryRun*/, logrus.New())
+	if err := c.CheckoutSeatToUser(1, 2, 3); !errors.Is(err, ErrDryRun) {
+		t.Fatalf("CheckoutSeatToUser = %v", err)
+	}
+	if err := c.CheckoutSeatToAsset(1, 2, 3); !errors.Is(err, ErrDryRun) {
+		t.Fatalf("CheckoutSeatToAsset = %v", err)
+	}
+	if err := c.CheckinSeat(1, 2); !errors.Is(err, ErrDryRun) {
+		t.Fatalf("CheckinSeat = %v", err)
+	}
+}
+
+func TestListSeatsParsesAssignments(t *testing.T) {
+	body := `{"total":3,"rows":[
+		{"id":10,"assigned_user":{"id":555},"assigned_asset":null},
+		{"id":11,"assigned_user":null,"assigned_asset":{"id":777}},
+		{"id":12,"assigned_user":null,"assigned_asset":null}
+	]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	seats, err := c.ListSeats(42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seats) != 3 {
+		t.Fatalf("got %d seats", len(seats))
+	}
+	if seats[0].AssignedUserID != 555 || seats[0].AssignedAssetID != 0 {
+		t.Errorf("seat0 = %+v", seats[0])
+	}
+	if seats[1].AssignedAssetID != 777 || seats[1].AssignedUserID != 0 {
+		t.Errorf("seat1 = %+v", seats[1])
+	}
+	if seats[2].AssignedUserID != 0 || seats[2].AssignedAssetID != 0 {
+		t.Errorf("seat2 (free) = %+v", seats[2])
+	}
+}
+
 func TestEnsureLicenseDryRunSkipsCreate(t *testing.T) {
 	var posted bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

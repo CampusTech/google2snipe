@@ -189,6 +189,89 @@ func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
 	return License{ID: p.ID, Name: p.Name, Seats: p.Seats}, nil
 }
 
+// ListSeats returns the license's seats and their current assignment.
+func (c *LicenseClient) ListSeats(licenseID int) ([]LicenseSeat, error) {
+	var out []LicenseSeat
+	offset := 0
+	const limit = 100
+	for {
+		raw, status, err := c.do(http.MethodGet, fmt.Sprintf("/licenses/%d/seats?limit=%d&offset=%d", licenseID, limit, offset), nil)
+		if err != nil {
+			return nil, err
+		}
+		if err := check2xx(status, raw, fmt.Sprintf("listing seats for license %d", licenseID)); err != nil {
+			return nil, err
+		}
+		var page struct {
+			Total int `json:"total"`
+			Rows  []struct {
+				ID           int `json:"id"`
+				AssignedUser *struct {
+					ID int `json:"id"`
+				} `json:"assigned_user"`
+				AssignedAsset *struct {
+					ID int `json:"id"`
+				} `json:"assigned_asset"`
+			} `json:"rows"`
+		}
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return nil, fmt.Errorf("listing seats for license %d: %w", licenseID, err)
+		}
+		for _, s := range page.Rows {
+			seat := LicenseSeat{ID: s.ID}
+			if s.AssignedUser != nil {
+				seat.AssignedUserID = s.AssignedUser.ID
+			}
+			if s.AssignedAsset != nil {
+				seat.AssignedAssetID = s.AssignedAsset.ID
+			}
+			out = append(out, seat)
+		}
+		if len(page.Rows) == 0 || len(out) >= page.Total {
+			break
+		}
+		offset += limit
+	}
+	return out, nil
+}
+
+func (c *LicenseClient) patchSeat(licenseID, seatID int, body map[string]any) error {
+	raw, status, err := c.do(http.MethodPatch, fmt.Sprintf("/licenses/%d/seats/%d", licenseID, seatID), body)
+	if err != nil {
+		return err
+	}
+	if err := check2xx(status, raw, fmt.Sprintf("seat %d on license %d", seatID, licenseID)); err != nil {
+		return err
+	}
+	var r snipeResp
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return fmt.Errorf("seat %d on license %d: %w", seatID, licenseID, err)
+	}
+	if r.Status != "success" {
+		return fmt.Errorf("seat %d on license %d: %s", seatID, licenseID, string(r.Messages))
+	}
+	return nil
+}
+
+func (c *LicenseClient) CheckoutSeatToUser(licenseID, seatID, userID int) error {
+	if c.dryRun {
+		return ErrDryRun
+	}
+	return c.patchSeat(licenseID, seatID, map[string]any{"assigned_to": userID})
+}
+func (c *LicenseClient) CheckoutSeatToAsset(licenseID, seatID, assetID int) error {
+	if c.dryRun {
+		return ErrDryRun
+	}
+	return c.patchSeat(licenseID, seatID, map[string]any{"asset_id": assetID})
+}
+func (c *LicenseClient) CheckinSeat(licenseID, seatID int) error {
+	if c.dryRun {
+		return ErrDryRun
+	}
+	return c.patchSeat(licenseID, seatID, map[string]any{"assigned_to": nil, "asset_id": nil})
+}
+
 // EnsureSeats grows the license's seat total to at least total.
 func (c *LicenseClient) EnsureSeats(licenseID, total int) error {
 	if c.dryRun {
