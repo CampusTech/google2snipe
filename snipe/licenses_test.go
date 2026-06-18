@@ -101,6 +101,55 @@ func TestEnsureLicenseDryRunSkipsCreate(t *testing.T) {
 	}
 }
 
+func TestEnsureLicenseCategoryCreates(t *testing.T) {
+	var posted map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/categories", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &posted)
+			_, _ = w.Write([]byte(`{"status":"success","payload":{"id":42}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"total":0,"rows":[]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	id, err := c.EnsureLicenseCategory("Software Licenses")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 42 {
+		t.Fatalf("id = %d, want 42", id)
+	}
+	if posted["category_type"] != "license" {
+		t.Errorf("category_type = %v, want license", posted["category_type"])
+	}
+}
+
+func TestEnsureLicenseCategoryFindsExisting(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/categories", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			t.Error("must not POST when a license category already exists")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"total":2,"rows":[{"id":3,"name":"Laptops","category_type":"asset"},{"id":9,"name":"Software Licenses","category_type":"license"}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	id, err := c.EnsureLicenseCategory("software licenses") // case-insensitive
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != 9 {
+		t.Fatalf("id = %d, want 9", id)
+	}
+}
+
 func TestEnsureLicenseUpdatesExisting(t *testing.T) {
 	var patched map[string]any
 	mux := http.NewServeMux()

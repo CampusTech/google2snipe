@@ -73,7 +73,8 @@ sync:
 # Optional: license cost sync (run `google2snipe licenses setup` to populate).
 licenses:
   enabled: false
-  default_license_category_id: 0        # REQUIRED when enabled (Snipe license category)
+  default_license_category_id: 0        # REQUIRED when enabled (Snipe license category).
+                                        # Leave blank at the `licenses setup` prompt to create one automatically.
   chrome:                               # keyed by deviceLicenseType; perpetual => non-reassignable
     educationUpgradePerpetual:
       name: "Chrome Education Upgrade (Perpetual)"

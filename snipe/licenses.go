@@ -104,6 +104,66 @@ func (c *LicenseClient) do(method, path string, body any) ([]byte, int, error) {
 	return data, resp.StatusCode, nil
 }
 
+// EnsureLicenseCategory finds a Snipe-IT category of type "license" by name
+// (case-insensitive) or creates it, returning its id.
+func (c *LicenseClient) EnsureLicenseCategory(name string) (int, error) {
+	offset := 0
+	const limit = 100
+	for {
+		raw, status, err := c.do(http.MethodGet, fmt.Sprintf("/categories?limit=%d&offset=%d", limit, offset), nil)
+		if err != nil {
+			return 0, err
+		}
+		if err := check2xx(status, raw, "listing categories"); err != nil {
+			return 0, err
+		}
+		var page struct {
+			Total int `json:"total"`
+			Rows  []struct {
+				ID           int    `json:"id"`
+				Name         string `json:"name"`
+				CategoryType string `json:"category_type"`
+			} `json:"rows"`
+		}
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return 0, fmt.Errorf("listing categories: %w", err)
+		}
+		for _, r := range page.Rows {
+			if r.CategoryType == "license" && strings.EqualFold(r.Name, name) {
+				return r.ID, nil
+			}
+		}
+		offset += len(page.Rows)
+		if len(page.Rows) == 0 || offset >= page.Total {
+			break
+		}
+	}
+	if c.dryRun {
+		return 0, ErrDryRun
+	}
+	raw, status, err := c.do(http.MethodPost, "/categories", map[string]any{"name": name, "category_type": "license"})
+	if err != nil {
+		return 0, err
+	}
+	if err := check2xx(status, raw, fmt.Sprintf("creating license category %q", name)); err != nil {
+		return 0, err
+	}
+	var r snipeResp
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return 0, fmt.Errorf("creating license category %q: %w", name, err)
+	}
+	if r.Status != "success" {
+		return 0, fmt.Errorf("creating license category %q: %s", name, string(r.Messages))
+	}
+	var p struct {
+		ID int `json:"id"`
+	}
+	if err := json.Unmarshal(r.Payload, &p); err != nil {
+		return 0, fmt.Errorf("parsing created category %q: %w", name, err)
+	}
+	return p.ID, nil
+}
+
 // ListLicenses returns all licenses (paginated).
 func (c *LicenseClient) ListLicenses() ([]License, error) {
 	var out []License

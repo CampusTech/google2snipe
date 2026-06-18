@@ -12,6 +12,7 @@ import (
 
 	"github.com/CampusTech/google2snipe/config"
 	"github.com/CampusTech/google2snipe/google"
+	"github.com/CampusTech/google2snipe/snipe"
 )
 
 // candidateProducts is the known Licensing-API product catalog probed at setup.
@@ -50,9 +51,26 @@ func runLicensesSetup(cmd *cobra.Command, args []string) error {
 
 	// 1) license category id
 	if out.DefaultLicenseCategoryID == 0 {
-		fmt.Print("Snipe-IT license category id (default_license_category_id): ")
+		fmt.Print("Snipe-IT license category id (leave blank to create one): ")
 		line, _ := in.ReadString('\n')
-		out.DefaultLicenseCategoryID, _ = strconv.Atoi(strings.TrimSpace(line))
+		line = strings.TrimSpace(line)
+		if line == "" {
+			fmt.Print("  name for the new license category [Software Licenses]: ")
+			nameLine, _ := in.ReadString('\n')
+			catName := strings.TrimSpace(nameLine)
+			if catName == "" {
+				catName = "Software Licenses"
+			}
+			lc := snipe.NewLicenseClient(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, false, licLog)
+			id, err := lc.EnsureLicenseCategory(catName)
+			if err != nil {
+				return fmt.Errorf("creating license category: %w", err)
+			}
+			out.DefaultLicenseCategoryID = id
+			fmt.Printf("  using license category %q (id %d)\n", catName, id)
+		} else {
+			out.DefaultLicenseCategoryID, _ = strconv.Atoi(line)
+		}
 	}
 
 	// 2) Chrome upgrade types from devices

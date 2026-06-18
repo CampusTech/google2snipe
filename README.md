@@ -294,7 +294,7 @@ These three steps are required before enabling the license sync:
 
    Without this, all license assignment calls fail with `SERVICE_DISABLED`. The tool surfaces this as a clear error message.
 
-3. **Create a Snipe-IT license category** and set `licenses.default_license_category_id` to its ID. This is required whenever `licenses.enabled` is `true`. Create one in Snipe-IT under Settings → Categories (type: License), note the ID, and set it in `settings.yaml`:
+3. **Provide a Snipe-IT license category.** When you run `google2snipe licenses setup` it will prompt for a category id. Leave the prompt blank and the command will offer to create a new category for you (defaulting to the name "Software Licenses") — just press Enter twice to accept the defaults. If you prefer to manage categories yourself, create one in Snipe-IT under Settings → Categories (type: License), note the ID, and enter it at the prompt (or set it directly in `settings.yaml`):
 
    ```yaml
    licenses:
