@@ -9,6 +9,7 @@ import (
 
 	"github.com/CampusTech/google2snipe/config"
 	"github.com/CampusTech/google2snipe/google"
+	"github.com/CampusTech/google2snipe/snipe"
 )
 
 func mustJSONChrome(t *testing.T, d *admin.ChromeOsDevice) []byte {
@@ -57,5 +58,50 @@ func TestSyncChromePerpetualPerDeviceAsset(t *testing.T) {
 	}
 	if !assets[101] || !assets[102] {
 		t.Errorf("want assets 101,102 seated; got %v", assets)
+	}
+}
+
+// recordingLC records the LicenseSpec passed to EnsureLicense so a test can assert
+// how SyncChrome translates a deviceLicenseType into the license's reassignable flag.
+type recordingLC struct {
+	stubLC
+	specs []snipe.LicenseSpec
+}
+
+func (r *recordingLC) EnsureLicense(spec snipe.LicenseSpec) (snipe.License, error) {
+	r.specs = append(r.specs, spec)
+	return r.stubLC.EnsureLicense(spec)
+}
+
+// TestSyncChromeSetsReassignableFromType guards the central perpetual-vs-recurring
+// semantic: a perpetual type must yield Reassignable=false, a fixed-term type true.
+func TestSyncChromeSetsReassignableFromType(t *testing.T) {
+	rec := &recordingLC{}
+	e := New(rec, logrus.New())
+	cfg := config.LicensesConfig{
+		Enabled:                  true,
+		DefaultLicenseCategoryID: 7,
+		Chrome: map[string]config.ChromeLicenseConfig{
+			"educationUpgradePerpetual":  {Name: "Perp"},      // perpetual  -> reassignable=false
+			"enterpriseUpgradeFixedTerm": {Name: "Recurring"}, // fixed-term -> reassignable=true
+		},
+	}
+	devs := []google.Device{
+		devWith(t, "P1", "educationUpgradePerpetual"),
+		devWith(t, "R1", "enterpriseUpgradeFixedTerm"),
+	}
+	asset := map[string]int{"P1": 201, "R1": 202}
+	if err := e.SyncChrome(cfg, devs, func(s string) (int, bool) { id, ok := asset[s]; return id, ok }); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, s := range rec.specs {
+		got[s.Name] = s.Reassignable
+	}
+	if got["Perp"] != false {
+		t.Errorf("perpetual license Reassignable = %v, want false", got["Perp"])
+	}
+	if got["Recurring"] != true {
+		t.Errorf("fixed-term license Reassignable = %v, want true", got["Recurring"])
 	}
 }
