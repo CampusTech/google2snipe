@@ -49,9 +49,9 @@ func TestLicenseClientRetriesThenSucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
-	// EnsureSeats issues a PATCH through do(); it must ride out the 429s and succeed.
-	if err := c.EnsureSeats(1, 5); err != nil {
-		t.Fatalf("EnsureSeats should retry past 429s and succeed, got %v", err)
+	// CheckoutSeatToAsset issues a single PATCH through do(); it must ride out the 429s.
+	if err := c.CheckoutSeatToAsset(1, 2, 3); err != nil {
+		t.Fatalf("CheckoutSeatToAsset should retry past 429s and succeed, got %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 3 {
 		t.Fatalf("server saw %d calls, want 3 (2 retries then success)", got)
@@ -67,7 +67,7 @@ func TestLicenseClientGivesUpAfterPersistent429(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
-	err := c.EnsureSeats(1, 5)
+	err := c.CheckoutSeatToAsset(1, 2, 3)
 	if err == nil || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("want a 429 error after exhausting retries, got %v", err)
 	}
@@ -135,6 +135,62 @@ func TestLicenseClientDryRunSentinel(t *testing.T) {
 	// EnsureSeats is a pure mutator: in dry-run it must return ErrDryRun before any HTTP.
 	if err := c.EnsureSeats(1, 5); !errors.Is(err, ErrDryRun) {
 		t.Fatalf("EnsureSeats dry-run = %v, want ErrDryRun", err)
+	}
+}
+
+// TestEnsureLicenseClampsCreateSeats reproduces the production failure: creating a license
+// with > 10000 seats is rejected by Snipe-IT's limit_change rule (on create, current seats
+// is 0, so the bound is 1..10000). The create must clamp seats to the per-change limit.
+func TestEnsureLicenseClampsCreateSeats(t *testing.T) {
+	createSeats := -1.0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet { // ListLicenses -> empty so a create is attempted
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"total":0,"rows":[]}`))
+			return
+		}
+		var body map[string]any // POST /licenses
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if s, ok := body["seats"].(float64); ok {
+			createSeats = s
+		}
+		_, _ = w.Write([]byte(`{"status":"success","payload":{"id":7,"name":"Big","seats":10000}}`))
+	}))
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	if _, err := c.EnsureLicense(LicenseSpec{Name: "Big", CategoryID: 1, Seats: 13000}); err != nil {
+		t.Fatalf("EnsureLicense: %v", err)
+	}
+	if createSeats != 10000 {
+		t.Fatalf("create seats = %v, want 10000 (clamped to Snipe's per-change limit)", createSeats)
+	}
+}
+
+// TestEnsureSeatsStepsPastChangeLimit verifies a grow larger than the per-change limit is
+// applied in <=10000 increments rather than one oversized PATCH that Snipe-IT would reject.
+func TestEnsureSeatsStepsPastChangeLimit(t *testing.T) {
+	var patched []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet { // GET /licenses/{id} -> current seat total
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":7,"seats":10000}`))
+			return
+		}
+		var body map[string]any // PATCH /licenses/{id}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if s, ok := body["seats"].(float64); ok {
+			patched = append(patched, int(s))
+		}
+		_, _ = w.Write([]byte(`{"status":"success"}`))
+	}))
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	if err := c.EnsureSeats(7, 25000); err != nil {
+		t.Fatalf("EnsureSeats: %v", err)
+	}
+	want := []int{20000, 25000} // 10000 -> 20000 (+10000) -> 25000 (+5000)
+	if len(patched) != len(want) || patched[0] != want[0] || patched[1] != want[1] {
+		t.Fatalf("patched seat steps = %v, want %v", patched, want)
 	}
 }
 
