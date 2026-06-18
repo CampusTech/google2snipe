@@ -76,6 +76,40 @@ func TestLicenseClientGivesUpAfterPersistent429(t *testing.T) {
 	}
 }
 
+// TestLicenseClientRetriesDroppedConnection reproduces the real backfill failure: a seat
+// PATCH hit "dial tcp ...: connect: connection refused" and aborted the whole run. A
+// transient network error on an idempotent request must be retried, not surfaced.
+func TestLicenseClientRetriesDroppedConnection(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			// Drop the connection without responding (a client-side transport error,
+			// the same class as connection refused/reset).
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("test server does not support hijacking")
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("hijack: %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"success"}`))
+	}))
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	// CheckoutSeatToAsset issues a PATCH (idempotent); the dropped first connection must be
+	// retried and the second attempt must succeed.
+	if err := c.CheckoutSeatToAsset(3, 3045, 999); err != nil {
+		t.Fatalf("CheckoutSeatToAsset should retry the dropped connection and succeed, got %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("server saw %d calls, want 2 (1 dropped, 1 success)", got)
+	}
+}
+
 func TestLicenseClientRetries5xxOnGet(t *testing.T) {
 	var calls int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
