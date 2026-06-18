@@ -129,7 +129,7 @@ func (c *LicenseClient) EnsureLicenseCategory(name string) (int, error) {
 			return 0, fmt.Errorf("listing categories: %w", err)
 		}
 		for _, r := range page.Rows {
-			if r.CategoryType == "license" && strings.EqualFold(r.Name, name) {
+			if strings.EqualFold(r.CategoryType, "license") && strings.EqualFold(r.Name, name) {
 				return r.ID, nil
 			}
 		}

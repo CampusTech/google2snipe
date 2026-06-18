@@ -136,7 +136,8 @@ func TestEnsureLicenseCategoryFindsExisting(t *testing.T) {
 			t.Error("must not POST when a license category already exists")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"total":2,"rows":[{"id":3,"name":"Laptops","category_type":"asset"},{"id":9,"name":"Software Licenses","category_type":"license"}]}`))
+		// Snipe-IT returns category_type title-cased ("License"/"Asset") — the find must match case-insensitively.
+		_, _ = w.Write([]byte(`{"total":2,"rows":[{"id":3,"name":"Laptops","category_type":"Asset"},{"id":9,"name":"Software Licenses","category_type":"License"}]}`))
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
