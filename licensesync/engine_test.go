@@ -220,4 +220,7 @@ func TestReconcileReturnsErrorOnRealCheckoutFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected reconcile to return the real checkout failure, got nil")
 	}
+	if err.Error() != "boom" {
+		t.Fatalf("expected the checkout error %q to propagate, got %v", "boom", err)
+	}
 }
