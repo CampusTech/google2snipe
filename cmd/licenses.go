@@ -68,7 +68,7 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		allAssets, err := sc.ListAllAssets()
+		allAssets, err := sc.ListAllAssets(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -88,7 +88,7 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 			id, ok := assetIdx[strings.ToLower(serial)]
 			return id, ok
 		}
-		if err := engine.SyncChrome(cfg.Licenses, devs, assetIDBySerial); err != nil {
+		if err := engine.SyncChrome(cmd.Context(), cfg.Licenses, devs, assetIDBySerial); err != nil {
 			return err
 		}
 	}
@@ -98,7 +98,7 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		users, err := newCachingSnipe(sc, cfg.Sync.UseCache, cfg.Sync.CacheDir, snipeLog).ListAllUsers()
+		users, err := newCachingSnipe(sc, cfg.Sync.UseCache, cfg.Sync.CacheDir, snipeLog).ListAllUsers(cmd.Context())
 		if err != nil {
 			return err
 		}
@@ -139,7 +139,7 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 			}
 			return 0, false
 		}
-		if err := engine.SyncWorkspace(cfg.Licenses, asg, userIDByEmail); err != nil {
+		if err := engine.SyncWorkspace(cmd.Context(), cfg.Licenses, asg, userIDByEmail); err != nil {
 			return err
 		}
 	}

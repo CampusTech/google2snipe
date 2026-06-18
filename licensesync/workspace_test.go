@@ -1,6 +1,7 @@
 package licensesync
 
 import (
+	"context"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -21,7 +22,7 @@ func TestSyncWorkspacePerSKUSeatPerUser(t *testing.T) {
 		{UserEmail: "b@x.edu", SKUID: "1010310008", SKUName: "Education Plus"},
 	}
 	uid := map[string]int{"a@x.edu": 10, "b@x.edu": 20}
-	err := e.SyncWorkspace(cfg, asg, func(email string) (int, bool) { id, ok := uid[email]; return id, ok })
+	err := e.SyncWorkspace(context.Background(), cfg, asg, func(email string) (int, bool) { id, ok := uid[email]; return id, ok })
 	if err != nil {
 		t.Fatal(err)
 	}

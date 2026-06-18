@@ -1,6 +1,7 @@
 package licensesync
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -11,14 +12,16 @@ import (
 )
 
 // LicenseClient is the subset of the Snipe license client the engine needs.
-// Seat methods take licenseID FIRST (matches *snipe.LicenseClient).
+// Seat methods take licenseID FIRST (matches *snipe.LicenseClient). Each method
+// takes a context so a Ctrl-C (SIGINT/SIGTERM) cancels in-flight requests and
+// aborts retry backoff instead of hard-killing the process mid-reconcile.
 type LicenseClient interface {
-	EnsureLicense(spec snipe.LicenseSpec) (snipe.License, error)
-	EnsureSeats(licenseID, total int) error
-	ListSeats(licenseID int) ([]snipe.LicenseSeat, error)
-	CheckoutSeatToUser(licenseID, seatID, userID int) error
-	CheckoutSeatToAsset(licenseID, seatID, assetID int) error
-	CheckinSeat(licenseID, seatID int) error
+	EnsureLicense(ctx context.Context, spec snipe.LicenseSpec) (snipe.License, error)
+	EnsureSeats(ctx context.Context, licenseID, total int) error
+	ListSeats(ctx context.Context, licenseID int) ([]snipe.LicenseSeat, error)
+	CheckoutSeatToUser(ctx context.Context, licenseID, seatID, userID int) error
+	CheckoutSeatToAsset(ctx context.Context, licenseID, seatID, assetID int) error
+	CheckinSeat(ctx context.Context, licenseID, seatID int) error
 }
 
 // Target is a desired seat-holder (a user or an asset).
@@ -101,7 +104,7 @@ func parallelFor(n, workers int, fn func(i int)) {
 // checking out new holders; non-reassignable (perpetual) licenses are additive and
 // never reclaim seats. In dry-run, mutating client methods return snipe.ErrDryRun;
 // Reconcile then logs the intended change and counts it without aborting.
-func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, error) {
+func (e *Engine) Reconcile(ctx context.Context, spec snipe.LicenseSpec, desired []Target) (Stats, error) {
 	// Deduplicate desired holders so the same user/asset is never seated twice
 	// (e.g. two Workspace emails resolving to one Snipe user via the local-part fallback).
 	if len(desired) > 1 {
@@ -122,7 +125,7 @@ func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, err
 	}
 
 	var st Stats
-	lic, err := e.lc.EnsureLicense(spec)
+	lic, err := e.lc.EnsureLicense(ctx, spec)
 	if isDryRun(err) {
 		e.log.WithField("license", spec.Name).WithField("would_seat", len(desired)).
 			Warn("[dry-run] would create license and seat holders")
@@ -143,7 +146,7 @@ func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, err
 		}
 	}
 
-	seats, err := e.lc.ListSeats(lic.ID)
+	seats, err := e.lc.ListSeats(ctx, lic.ID)
 	if err != nil {
 		return st, err
 	}
@@ -196,12 +199,17 @@ func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, err
 		freed := make([]bool, len(toCheckin))
 		cerrs := make([]error, len(toCheckin))
 		parallelFor(len(toCheckin), workers, func(i int) {
+			// Stop issuing new seat PATCHes promptly once ctx is cancelled (Ctrl-C);
+			// the slot stays zero-valued so it's neither counted nor errored.
+			if ctx.Err() != nil {
+				return
+			}
 			// Worker invariant: write ONLY this i's slots (freed[i]/cerrs[i]). st.CheckedIn,
 			// free, and firstErr are aggregated single-threaded after parallelFor returns.
 			seatID := toCheckin[i]
 			// A dry-run check-in returns ErrDryRun; treat it as a (pretended) freed seat so
 			// the dry-run reports the same intended reuse a real run would.
-			if err := e.lc.CheckinSeat(lic.ID, seatID); err != nil && !isDryRun(err) {
+			if err := e.lc.CheckinSeat(ctx, lic.ID, seatID); err != nil && !isDryRun(err) {
 				e.log.WithError(err).WithField("seat", seatID).Warn("seat checkin failed")
 				cerrs[i] = err
 				return
@@ -243,9 +251,9 @@ func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, err
 	growthDryRun := false
 	if len(need) > len(free) {
 		newTotal := len(seats) + (len(need) - len(free))
-		switch err := e.lc.EnsureSeats(lic.ID, newTotal); {
+		switch err := e.lc.EnsureSeats(ctx, lic.ID, newTotal); {
 		case err == nil:
-			seats2, lerr := e.lc.ListSeats(lic.ID)
+			seats2, lerr := e.lc.ListSeats(ctx, lic.ID)
 			if lerr != nil {
 				return st, lerr
 			}
@@ -276,15 +284,20 @@ func (e *Engine) Reconcile(spec snipe.LicenseSpec, desired []Target) (Stats, err
 		coOK := make([]bool, k)
 		coErr := make([]error, k)
 		parallelFor(k, workers, func(i int) {
+			// Stop issuing new seat PATCHes promptly once ctx is cancelled (Ctrl-C);
+			// the slot stays zero-valued so it's neither counted nor errored.
+			if ctx.Err() != nil {
+				return
+			}
 			// Worker invariant: write ONLY this i's slots (coOK[i]/coErr[i]) and read its
 			// pre-assigned seatFor[i]. st.CheckedOut/firstErr are aggregated after the barrier.
 			t := need[i]
 			seatID := seatFor[i]
 			var cerr error
 			if t.IsUser {
-				cerr = e.lc.CheckoutSeatToUser(lic.ID, seatID, t.ID)
+				cerr = e.lc.CheckoutSeatToUser(ctx, lic.ID, seatID, t.ID)
 			} else {
-				cerr = e.lc.CheckoutSeatToAsset(lic.ID, seatID, t.ID)
+				cerr = e.lc.CheckoutSeatToAsset(ctx, lic.ID, seatID, t.ID)
 			}
 			if cerr != nil && !isDryRun(cerr) {
 				e.log.WithError(cerr).WithField("holder", t.ID).Warn("seat checkout failed")

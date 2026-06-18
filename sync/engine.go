@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"regexp"
 	"strings"
 	"sync"
@@ -14,20 +15,22 @@ import (
 	"github.com/CampusTech/google2snipe/snipe"
 )
 
-// SnipeClient is the subset of the snipe wrapper the engine depends on.
+// SnipeClient is the subset of the snipe wrapper the engine depends on. Every
+// method takes a context so a Ctrl-C (SIGINT/SIGTERM) cancels in-flight requests
+// and aborts retry backoff instead of hard-killing the process mid-sync.
 type SnipeClient interface {
-	GetAssetBySerial(serial string) ([]snipe.Asset, error)
-	ListAllAssets() ([]snipe.Asset, error)
-	CreateAsset(a snipe.Asset) (snipe.Asset, error)
-	PatchAsset(id int, a snipe.Asset) (snipe.Asset, error)
-	CheckoutAssetToUser(assetID, userID int) error
-	CheckinAsset(assetID int) error
-	ListAllModels() ([]snipe.Model, error)
-	CreateModel(m snipe.Model) (snipe.Model, error)
-	ListAllManufacturers() ([]snipe.Manufacturer, error)
-	CreateManufacturer(name string) (snipe.Manufacturer, error)
-	ListAllUsers() ([]snipe.User, error)
-	ListAllStatusLabels() ([]snipe.StatusLabel, error)
+	GetAssetBySerial(ctx context.Context, serial string) ([]snipe.Asset, error)
+	ListAllAssets(ctx context.Context) ([]snipe.Asset, error)
+	CreateAsset(ctx context.Context, a snipe.Asset) (snipe.Asset, error)
+	PatchAsset(ctx context.Context, id int, a snipe.Asset) (snipe.Asset, error)
+	CheckoutAssetToUser(ctx context.Context, assetID, userID int) error
+	CheckinAsset(ctx context.Context, assetID int) error
+	ListAllModels(ctx context.Context) ([]snipe.Model, error)
+	CreateModel(ctx context.Context, m snipe.Model) (snipe.Model, error)
+	ListAllManufacturers(ctx context.Context) ([]snipe.Manufacturer, error)
+	CreateManufacturer(ctx context.Context, name string) (snipe.Manufacturer, error)
+	ListAllUsers(ctx context.Context) ([]snipe.User, error)
+	ListAllStatusLabels(ctx context.Context) ([]snipe.StatusLabel, error)
 }
 
 // Stats accumulates per-run counters.
@@ -111,22 +114,22 @@ func (e *Engine) assetTag(dev google.Device) string {
 }
 
 // Warm preloads models, manufacturers, and users into in-memory indexes.
-func (e *Engine) Warm() error {
-	models, err := e.snipe.ListAllModels()
+func (e *Engine) Warm(ctx context.Context) error {
+	models, err := e.snipe.ListAllModels(ctx)
 	if err != nil {
 		return err
 	}
 	for _, m := range models {
 		e.models[m.Name] = m
 	}
-	manufs, err := e.snipe.ListAllManufacturers()
+	manufs, err := e.snipe.ListAllManufacturers(ctx)
 	if err != nil {
 		return err
 	}
 	for _, m := range manufs {
 		e.manufacturers[strings.ToLower(m.Name)] = m
 	}
-	users, err := e.snipe.ListAllUsers()
+	users, err := e.snipe.ListAllUsers(ctx)
 	if err != nil {
 		return err
 	}
@@ -136,7 +139,7 @@ func (e *Engine) Warm() error {
 			e.userIndex[strings.ToLower(key)] = u.ID
 		}
 	}
-	labels, err := e.snipe.ListAllStatusLabels()
+	labels, err := e.snipe.ListAllStatusLabels(ctx)
 	if err != nil {
 		return err
 	}
@@ -145,7 +148,7 @@ func (e *Engine) Warm() error {
 			e.deployableStatuses[s.ID] = true
 		}
 	}
-	assets, err := e.snipe.ListAllAssets()
+	assets, err := e.snipe.ListAllAssets(ctx)
 	if err != nil {
 		return err
 	}
@@ -182,7 +185,7 @@ func userKey(u snipe.User, matchField string) string {
 
 // ensureManufacturer resolves (or creates) a Snipe manufacturer from the
 // device's model vendor (first token of the model string).
-func (e *Engine) ensureManufacturer(dev google.Device) (int, error) {
+func (e *Engine) ensureManufacturer(ctx context.Context, dev google.Device) (int, error) {
 	vendor := modelVendor(dev.Model)
 	if vendor == "" {
 		return e.cfg.SnipeIT.DefaultManufacturerID, nil
@@ -195,7 +198,7 @@ func (e *Engine) ensureManufacturer(dev google.Device) (int, error) {
 	if m, ok := e.manufacturers[strings.ToLower(vendor)]; ok {
 		return m.ID, nil
 	}
-	m, err := e.snipe.CreateManufacturer(vendor)
+	m, err := e.snipe.CreateManufacturer(ctx, vendor)
 	if err != nil {
 		return 0, err
 	}
@@ -212,7 +215,7 @@ func modelVendor(model string) string {
 }
 
 // ensureModel resolves (or creates) a Snipe model from the device model name.
-func (e *Engine) ensureModel(dev google.Device) (int, error) {
+func (e *Engine) ensureModel(ctx context.Context, dev google.Device) (int, error) {
 	name := strings.TrimSpace(dev.Model)
 	if name == "" {
 		name = "Unknown ChromeOS Device"
@@ -233,7 +236,7 @@ func (e *Engine) ensureModel(dev google.Device) (int, error) {
 	}
 	e.mu.Unlock()
 
-	manufID, err := e.ensureManufacturer(dev)
+	manufID, err := e.ensureManufacturer(ctx, dev)
 	if err != nil {
 		return 0, err
 	}
@@ -244,7 +247,7 @@ func (e *Engine) ensureModel(dev google.Device) (int, error) {
 	if m, ok := e.models[name]; ok {
 		return m.ID, nil
 	}
-	m, err := e.snipe.CreateModel(snipe.Model{
+	m, err := e.snipe.CreateModel(ctx, snipe.Model{
 		Name:           name,
 		ManufacturerID: manufID,
 		CategoryID:     e.cfg.SnipeIT.DefaultCategoryID,
@@ -305,7 +308,7 @@ func (e *Engine) lookupUser(email string) (int, bool) {
 
 // SyncAll reconciles every device through a bounded worker pool and returns run
 // statistics. It is not safe to call concurrently with itself or StatsSnapshot.
-func (e *Engine) SyncAll(devs []google.Device) Stats {
+func (e *Engine) SyncAll(ctx context.Context, devs []google.Device) Stats {
 	workers := e.cfg.Sync.Concurrency
 	if workers < 1 {
 		workers = 1
@@ -318,13 +321,21 @@ func (e *Engine) SyncAll(devs []google.Device) Stats {
 		go func(idx int) {
 			defer wg.Done()
 			for d := range jobs {
-				e.syncDevice(d, &partials[idx])
+				e.syncDevice(ctx, d, &partials[idx])
 			}
 		}(w)
 	}
+	// Stop dispatching new work once ctx is cancelled (Ctrl-C): close the channel so
+	// the workers drain whatever they already picked up and exit, instead of queueing
+	// the rest of the device list.
 	for _, d := range devs {
-		jobs <- d
+		select {
+		case jobs <- d:
+		case <-ctx.Done():
+			goto drain
+		}
 	}
+drain:
 	close(jobs)
 	wg.Wait()
 	for _, p := range partials {
@@ -341,12 +352,12 @@ func (e *Engine) SyncAll(devs []google.Device) Stats {
 func (e *Engine) StatsSnapshot() Stats { return e.stats }
 
 // SyncDevice reconciles a single device into Snipe-IT.
-func (e *Engine) SyncDevice(dev google.Device) {
-	e.syncDevice(dev, &e.stats)
+func (e *Engine) SyncDevice(ctx context.Context, dev google.Device) {
+	e.syncDevice(ctx, dev, &e.stats)
 }
 
 // syncDevice is the per-device implementation; counters are written to st.
-func (e *Engine) syncDevice(dev google.Device, st *Stats) {
+func (e *Engine) syncDevice(ctx context.Context, dev google.Device, st *Stats) {
 	st.Total++
 	serial := strings.TrimSpace(dev.SerialNumber)
 	if serial == "" {
@@ -363,19 +374,19 @@ func (e *Engine) syncDevice(dev google.Device, st *Stats) {
 			st.Skipped++
 			return
 		}
-		e.createDev(dev, l, st)
+		e.createDev(ctx, dev, l, st)
 	} else {
-		e.updateDev(dev, existing, l, st)
+		e.updateDev(ctx, dev, existing, l, st)
 	}
 }
 
-func (e *Engine) createDev(dev google.Device, l *logrus.Entry, st *Stats) {
+func (e *Engine) createDev(ctx context.Context, dev google.Device, l *logrus.Entry, st *Stats) {
 	if e.cfg.Sync.DryRun {
 		l.WithField("model", dev.Model).Info("[DRY RUN] would create asset")
 		st.Created++
 		return
 	}
-	modelID, err := e.ensureModel(dev)
+	modelID, err := e.ensureModel(ctx, dev)
 	if err != nil {
 		l.WithError(err).Error("ensure model failed")
 		st.Errors++
@@ -401,7 +412,7 @@ func (e *Engine) createDev(dev google.Device, l *logrus.Entry, st *Stats) {
 			checkedOutAtCreate = true
 		}
 	}
-	created, err := e.snipe.CreateAsset(asset)
+	created, err := e.snipe.CreateAsset(ctx, asset)
 	if err != nil {
 		l.WithError(err).Error("create asset failed")
 		st.Errors++
@@ -409,15 +420,15 @@ func (e *Engine) createDev(dev google.Device, l *logrus.Entry, st *Stats) {
 	}
 	l.WithField("snipe_id", created.ID).Info("created asset")
 	if !checkedOutAtCreate {
-		e.applyCheckout(dev, created, l)
+		e.applyCheckout(ctx, dev, created, l)
 	}
 	st.Created++
 }
 
-func (e *Engine) updateDev(dev google.Device, existing snipe.Asset, l *logrus.Entry, st *Stats) {
+func (e *Engine) updateDev(ctx context.Context, dev google.Device, existing snipe.Asset, l *logrus.Entry, st *Stats) {
 	if !e.cfg.Sync.Force && deviceOlderThan(dev, existing.UpdatedAt) {
 		l.Debug("snipe record newer than device; skipping field update")
-		e.applyCheckout(dev, existing, l)
+		e.applyCheckout(ctx, dev, existing, l)
 		st.Skipped++
 		return
 	}
@@ -426,7 +437,7 @@ func (e *Engine) updateDev(dev google.Device, existing snipe.Asset, l *logrus.En
 		st.Updated++
 		return
 	}
-	modelID, err := e.ensureModel(dev)
+	modelID, err := e.ensureModel(ctx, dev)
 	if err != nil {
 		l.WithError(err).Error("ensure model failed")
 		st.Errors++
@@ -440,17 +451,17 @@ func (e *Engine) updateDev(dev google.Device, existing snipe.Asset, l *logrus.En
 	if e.cfg.Sync.SetName {
 		patch.Name = e.renderName(dev)
 	}
-	if _, err := e.snipe.PatchAsset(existing.ID, patch); err != nil {
+	if _, err := e.snipe.PatchAsset(ctx, existing.ID, patch); err != nil {
 		l.WithError(err).Error("update asset failed")
 		st.Errors++
 		return
 	}
 	l.WithField("snipe_id", existing.ID).Info("updated asset")
-	e.applyCheckout(dev, existing, l)
+	e.applyCheckout(ctx, dev, existing, l)
 	st.Updated++
 }
 
-func (e *Engine) applyCheckout(dev google.Device, asset snipe.Asset, l *logrus.Entry) {
+func (e *Engine) applyCheckout(ctx context.Context, dev google.Device, asset snipe.Asset, l *logrus.Entry) {
 	// Snipe-IT only checks out assets whose status is deployable; skip devices
 	// whose mapped status isn't (e.g. DEPROVISIONED/DISABLED -> Archived) so we
 	// don't attempt an impossible checkout. Only enforced when status-label
@@ -481,12 +492,12 @@ func (e *Engine) applyCheckout(dev google.Device, asset snipe.Asset, l *logrus.E
 	// user, check it in first so Snipe-IT will accept the reassignment.
 	mode := e.cfg.Sync.Checkout.Mode
 	if (mode == "sync" || mode == "force") && asset.AssignedToID != 0 && asset.AssignedToID != userID {
-		if err := e.snipe.CheckinAsset(asset.ID); err != nil {
+		if err := e.snipe.CheckinAsset(ctx, asset.ID); err != nil {
 			l.WithError(err).Warn("checkin before reassign failed")
 			return
 		}
 	}
-	if err := e.snipe.CheckoutAssetToUser(asset.ID, userID); err != nil {
+	if err := e.snipe.CheckoutAssetToUser(ctx, asset.ID, userID); err != nil {
 		l.WithError(err).Warn("checkout failed")
 		return
 	}

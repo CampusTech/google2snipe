@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -93,7 +94,7 @@ func TestResolveCheckoutAnnotatedThenRecentWithDomain(t *testing.T) {
 		{ID: 20, Email: "kid@school.edu"},
 	}}
 	e := New(cfg, stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,10 +127,10 @@ func TestEnsureManufacturerFromModel(t *testing.T) {
 	cfg.SnipeIT.DefaultManufacturerID = 0
 	stub := &stubSnipe{}
 	e := New(cfg, stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	id, err := e.ensureManufacturer(dev(t, &admin.ChromeOsDevice{Model: "Lenovo 300e Chromebook"}))
+	id, err := e.ensureManufacturer(context.Background(), dev(t, &admin.ChromeOsDevice{Model: "Lenovo 300e Chromebook"}))
 	if err != nil || id == 0 {
 		t.Fatalf("ensureManufacturer = %d, %v", id, err)
 	}
@@ -152,10 +153,10 @@ func baseCfg() *config.Config {
 func TestSyncDeviceCreatesWhenAbsent(t *testing.T) {
 	stub := &stubSnipe{bySerial: map[string][]snipe.Asset{}}
 	e := New(baseCfg(), stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{
 		SerialNumber: "S1", Status: "ACTIVE", Model: "Acer Chromebook 311", AnnotatedAssetId: "CG-1",
 	}))
 	if len(stub.created) != 1 {
@@ -177,10 +178,10 @@ func TestSyncDeviceUpdatesWhenPresent(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Sync.Force = true // skip freshness gate
 	e := New(cfg, stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{SerialNumber: "S1", Status: "DISABLED", Model: "Acer Chromebook 311"}))
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{SerialNumber: "S1", Status: "DISABLED", Model: "Acer Chromebook 311"}))
 	if len(stub.created) != 0 {
 		t.Fatalf("should not create, created=%d", len(stub.created))
 	}
@@ -198,8 +199,8 @@ func TestSyncDeviceUpdateOnlySkipsCreate(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Sync.UpdateOnly = true
 	e := New(cfg, stub, logrus.New())
-	_ = e.Warm()
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{SerialNumber: "S9", Status: "ACTIVE"}))
+	_ = e.Warm(context.Background())
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{SerialNumber: "S9", Status: "ACTIVE"}))
 	if len(stub.created) != 0 {
 		t.Errorf("update_only must not create, created=%d", len(stub.created))
 	}
@@ -208,8 +209,8 @@ func TestSyncDeviceUpdateOnlySkipsCreate(t *testing.T) {
 func TestSyncDeviceSkipsEmptySerial(t *testing.T) {
 	stub := &stubSnipe{bySerial: map[string][]snipe.Asset{}}
 	e := New(baseCfg(), stub, logrus.New())
-	_ = e.Warm()
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{SerialNumber: ""}))
+	_ = e.Warm(context.Background())
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{SerialNumber: ""}))
 	if len(stub.created) != 0 || e.stats.Total != 1 || e.stats.Skipped != 1 {
 		t.Errorf("empty serial should be skipped: created=%d stats=%+v", len(stub.created), e.stats)
 	}
@@ -227,11 +228,11 @@ func TestSyncDeviceFreshnessSkip(t *testing.T) {
 	}}
 	cfg := baseCfg() // Force defaults false
 	e := New(cfg, stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	// LastSync 2024-01-01 is older than asset UpdatedAt 2025-01-01 → freshness skip
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{
 		SerialNumber: "S1",
 		Status:       "ACTIVE",
 		Model:        "Acer Chromebook 311",
@@ -262,10 +263,10 @@ func TestSyncDeviceCheckoutSyncReassigns(t *testing.T) {
 		users: []snipe.User{{ID: 20, Email: "new@example.com"}},
 	}
 	e := New(cfg, stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{
 		SerialNumber: "S1", Status: "ACTIVE", Model: "Acer Chromebook 311",
 		AnnotatedUser: "new@example.com",
 	}))
@@ -294,10 +295,10 @@ func TestSyncDeviceAssignModeNoReassign(t *testing.T) {
 		users: []snipe.User{{ID: 20, Email: "new@example.com"}},
 	}
 	e := New(cfg, stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{
 		SerialNumber: "S1", Status: "ACTIVE", Model: "Acer Chromebook 311",
 		AnnotatedUser: "new@example.com",
 	}))
@@ -316,10 +317,10 @@ func TestSyncDeviceDryRunNoMutators(t *testing.T) {
 	cfg.Sync.DryRun = true
 	stub := &stubSnipe{bySerial: map[string][]snipe.Asset{}}
 	e := New(cfg, stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{
 		SerialNumber:     "S2",
 		Status:           "ACTIVE",
 		Model:            "Acer Chromebook 311",
@@ -342,14 +343,14 @@ func TestSyncUsesAssetIndexForExisting(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Sync.Force = true // skip freshness gate so the update always proceeds
 	e := New(cfg, stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	// Confirm index was populated from bySerial via ListAllAssets
 	if _, found := e.assetIndex["abc"]; !found {
 		t.Fatal("assetIndex should contain 'abc' after Warm")
 	}
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{
 		SerialNumber: "ABC", Status: "ACTIVE", Model: "Acer Chromebook 311",
 	}))
 	if len(stub.created) != 0 {
@@ -374,13 +375,13 @@ func TestApplyCheckoutSkipsNonDeployableStatus(t *testing.T) {
 		},
 	}
 	e := New(cfg, stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
 	// DISABLED -> status 9 (archived) -> not deployable -> no checkout, even
 	// though a matching user exists.
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{
 		SerialNumber: "D1", Status: "DISABLED", Model: "Acer Chromebook 311", AnnotatedUser: "owner@example.com",
 	}))
 	if len(stub.checkouts) != 0 {
@@ -389,7 +390,7 @@ func TestApplyCheckoutSkipsNonDeployableStatus(t *testing.T) {
 
 	// ACTIVE -> default status 1 (deployable) -> checked out AT CREATE
 	// (AssignedToID on the create, not a separate checkout call).
-	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{
 		SerialNumber: "D2", Status: "ACTIVE", Model: "Acer Chromebook 311", AnnotatedUser: "owner@example.com",
 	}))
 	found := false
@@ -414,7 +415,7 @@ func TestSyncAllConcurrentNoRace(t *testing.T) {
 	cfg := baseCfg()
 	cfg.Sync.Concurrency = 8
 	e := New(cfg, stub, logrus.New())
-	if err := e.Warm(); err != nil {
+	if err := e.Warm(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	var devs []google.Device
@@ -424,7 +425,7 @@ func TestSyncAllConcurrentNoRace(t *testing.T) {
 			Status:       "ACTIVE",
 		}))
 	}
-	st := e.SyncAll(devs)
+	st := e.SyncAll(context.Background(), devs)
 	if st.Created != 200 {
 		t.Fatalf("Created = %d, want 200", st.Created)
 	}
@@ -433,5 +434,38 @@ func TestSyncAllConcurrentNoRace(t *testing.T) {
 	// double-create under the lock — a logic bug -race cannot catch).
 	if len(stub.models) != 1 {
 		t.Fatalf("model created %d times, want 1 (concurrent ensureModel de-dup)", len(stub.models))
+	}
+}
+
+// TestSyncAllPreCancelledStopsDispatching proves the dispatch-loop guard: with an
+// already-cancelled context, SyncAll stops feeding the worker pool almost immediately
+// instead of queueing the whole device list, so a Ctrl-C halts new work promptly. The
+// unbuffered jobs channel means a cancelled ctx is selected before any device is sent.
+func TestSyncAllPreCancelledStopsDispatching(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel before the run
+
+	stub := &stubSnipe{
+		bySerial:     map[string][]snipe.Asset{},
+		statusLabels: []snipe.StatusLabel{{ID: 2, Type: "deployable"}},
+	}
+	cfg := baseCfg()
+	cfg.Sync.Concurrency = 4
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var devs []google.Device
+	for i := 0; i < 200; i++ {
+		devs = append(devs, dev(t, &admin.ChromeOsDevice{
+			SerialNumber: fmt.Sprintf("S%03d", i), Status: "ACTIVE",
+		}))
+	}
+	st := e.SyncAll(ctx, devs)
+
+	// The dispatch loop bails on ctx.Done(); workers drain only what they already grabbed.
+	// Under a pre-cancelled ctx that is far fewer than the 200 queued devices.
+	if st.Total >= len(devs) {
+		t.Fatalf("processed Total=%d of %d devices; cancellation should stop dispatch well short", st.Total, len(devs))
 	}
 }

@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -70,10 +73,15 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "text", "log format: text|json")
 }
 
-// Execute runs the root command.
+// Execute runs the root command. It installs a signal-cancelled root context so
+// SIGINT (Ctrl-C) / SIGTERM gracefully cancels in-flight HTTP requests, aborts
+// retry/backoff sleeps, and stops the sync worker pools / reconcile loops from
+// dispatching new work — instead of hard-killing the process mid-run.
 func Execute() {
 	rootCmd.Version = Version
-	if err := rootCmd.Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		log.WithError(err).Error("command failed")
 		os.Exit(1)
 	}

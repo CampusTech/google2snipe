@@ -1,6 +1,7 @@
 package snipe
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +17,7 @@ func TestDryRunBlocksCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = c.CreateAsset(Asset{Serial: "X1", ModelID: 1, StatusID: 1})
+	_, err = c.CreateAsset(context.Background(), Asset{Serial: "X1", ModelID: 1, StatusID: 1})
 	if !errors.Is(err, ErrDryRun) {
 		t.Fatalf("CreateAsset in dry-run = %v, want ErrDryRun", err)
 	}
@@ -39,7 +40,7 @@ func TestCreateAssetRetriesOn429(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := c.CreateAsset(Asset{Serial: "S", ModelID: 1, StatusID: 1})
+	a, err := c.CreateAsset(context.Background(), Asset{Serial: "S", ModelID: 1, StatusID: 1})
 	if err != nil {
 		t.Fatalf("expected success after retry, got %v", err)
 	}
@@ -67,7 +68,7 @@ func TestCreateAssetRetriesOn5xx(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := c.CreateAsset(Asset{Serial: "S", ModelID: 1, StatusID: 1})
+	a, err := c.CreateAsset(context.Background(), Asset{Serial: "S", ModelID: 1, StatusID: 1})
 	if err != nil {
 		t.Fatalf("expected success after 503 retry, got %v", err)
 	}
@@ -95,7 +96,7 @@ func TestListAllAssetsPaginates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assets, err := c.ListAllAssets()
+	assets, err := c.ListAllAssets(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

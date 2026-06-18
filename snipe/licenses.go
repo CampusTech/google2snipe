@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -86,7 +87,7 @@ func check2xx(status int, raw []byte, what string) error {
 // relative-mutation PATCH without making do() skip retries for it. POST (license/category
 // create) is never retried on 5xx/network errors so a create that may have succeeded is not
 // replayed.
-func (c *LicenseClient) do(method, path string, body any) ([]byte, int, error) {
+func (c *LicenseClient) do(ctx context.Context, method, path string, body any) ([]byte, int, error) {
 	var bodyBytes []byte
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -104,10 +105,9 @@ func (c *LicenseClient) do(method, path string, body any) ([]byte, int, error) {
 		if bodyBytes != nil {
 			rdr = bytes.NewReader(bodyBytes)
 		}
-		// context.Background() matches the existing asset client (snipe/client.go), which also
-		// does not thread a caller context yet; this satisfies noctx and leaves a clean seam
-		// for a future caller-supplied context to enable graceful cancellation.
-		req, err := http.NewRequestWithContext(context.Background(), method, c.baseURL+"/api/v1"+path, rdr)
+		// The caller-supplied ctx (rooted at a signal.NotifyContext in cmd) lets a Ctrl-C
+		// abort the in-flight request and any backoff sleep instead of hard-killing the run.
+		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+"/api/v1"+path, rdr)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -125,6 +125,11 @@ func (c *LicenseClient) do(method, path string, body any) ([]byte, int, error) {
 		)
 		resp, err := c.http.Do(req)
 		if err != nil {
+			// A cancelled/deadline-exceeded ctx is not a transient failure — abort
+			// immediately rather than retrying a request the caller no longer wants.
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, 0, err
+			}
 			if !idempotent || attempt >= maxAttempts {
 				return nil, 0, fmt.Errorf("%s %s: after %d attempt(s): %w", method, path, attempt, err)
 			}
@@ -149,7 +154,13 @@ func (c *LicenseClient) do(method, path string, body any) ([]byte, int, error) {
 		}
 		c.log.WithFields(logrus.Fields{"method": method, "path": path, "attempt": attempt, "wait": wait.String(), "reason": reason}).
 			Warn("snipe license request failed (429/5xx/transient); backing off")
-		time.Sleep(wait)
+		// Cancel-aware backoff: a Ctrl-C (SIGINT/SIGTERM) cancels ctx so we abort the
+		// sleep promptly instead of waiting out the full Retry-After/exponential wait.
+		select {
+		case <-ctx.Done():
+			return nil, 0, ctx.Err()
+		case <-time.After(wait):
+		}
 		if backoff *= 2; backoff > maxBackoff {
 			backoff = maxBackoff
 		}
@@ -181,11 +192,11 @@ func retryAfterDuration(h http.Header) (time.Duration, bool) {
 
 // EnsureLicenseCategory finds a Snipe-IT category of type "license" by name
 // (case-insensitive) or creates it, returning its id.
-func (c *LicenseClient) EnsureLicenseCategory(name string) (int, error) {
+func (c *LicenseClient) EnsureLicenseCategory(ctx context.Context, name string) (int, error) {
 	offset := 0
 	const limit = 100
 	for {
-		raw, status, err := c.do(http.MethodGet, fmt.Sprintf("/categories?limit=%d&offset=%d", limit, offset), nil)
+		raw, status, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/categories?limit=%d&offset=%d", limit, offset), nil)
 		if err != nil {
 			return 0, err
 		}
@@ -216,7 +227,7 @@ func (c *LicenseClient) EnsureLicenseCategory(name string) (int, error) {
 	if c.dryRun {
 		return 0, ErrDryRun
 	}
-	raw, status, err := c.do(http.MethodPost, "/categories", map[string]any{"name": name, "category_type": "license"})
+	raw, status, err := c.do(ctx, http.MethodPost, "/categories", map[string]any{"name": name, "category_type": "license"})
 	if err != nil {
 		return 0, err
 	}
@@ -240,12 +251,12 @@ func (c *LicenseClient) EnsureLicenseCategory(name string) (int, error) {
 }
 
 // ListLicenses returns all licenses (paginated).
-func (c *LicenseClient) ListLicenses() ([]License, error) {
+func (c *LicenseClient) ListLicenses(ctx context.Context) ([]License, error) {
 	var out []License
 	offset := 0
 	const limit = 100
 	for {
-		raw, status, err := c.do(http.MethodGet, fmt.Sprintf("/licenses?limit=%d&offset=%d", limit, offset), nil)
+		raw, status, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/licenses?limit=%d&offset=%d", limit, offset), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -276,7 +287,7 @@ func (c *LicenseClient) ListLicenses() ([]License, error) {
 
 // updateLicense PATCHes the mutable fields of an existing license so config changes
 // (cost, category, reassignable, expiration) propagate on re-sync. config is source of truth.
-func (c *LicenseClient) updateLicense(id int, spec LicenseSpec) error {
+func (c *LicenseClient) updateLicense(ctx context.Context, id int, spec LicenseSpec) error {
 	body := map[string]any{
 		"purchase_cost": spec.CostPerSeat,
 		"category_id":   spec.CategoryID,
@@ -287,7 +298,7 @@ func (c *LicenseClient) updateLicense(id int, spec LicenseSpec) error {
 	} else {
 		body["expiration_date"] = nil
 	}
-	raw, status, err := c.do(http.MethodPatch, fmt.Sprintf("/licenses/%d", id), body)
+	raw, status, err := c.do(ctx, http.MethodPatch, fmt.Sprintf("/licenses/%d", id), body)
 	if err != nil {
 		return err
 	}
@@ -306,15 +317,15 @@ func (c *LicenseClient) updateLicense(id int, spec LicenseSpec) error {
 
 // EnsureLicense finds a license by name or creates it. On create it sets the
 // category, seats, cost, reassignable flag, and (optional) expiration.
-func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
-	existing, err := c.ListLicenses()
+func (c *LicenseClient) EnsureLicense(ctx context.Context, spec LicenseSpec) (License, error) {
+	existing, err := c.ListLicenses(ctx)
 	if err != nil {
 		return License{}, err
 	}
 	for _, l := range existing {
 		if strings.EqualFold(l.Name, spec.Name) {
 			if !c.dryRun {
-				if err := c.updateLicense(l.ID, spec); err != nil {
+				if err := c.updateLicense(ctx, l.ID, spec); err != nil {
 					return License{}, err
 				}
 			}
@@ -336,7 +347,7 @@ func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
 	if spec.ExpirationDate != "" {
 		body["expiration_date"] = spec.ExpirationDate
 	}
-	raw, status, err := c.do(http.MethodPost, "/licenses", body)
+	raw, status, err := c.do(ctx, http.MethodPost, "/licenses", body)
 	if err != nil {
 		return License{}, err
 	}
@@ -362,12 +373,12 @@ func (c *LicenseClient) EnsureLicense(spec LicenseSpec) (License, error) {
 }
 
 // ListSeats returns the license's seats and their current assignment.
-func (c *LicenseClient) ListSeats(licenseID int) ([]LicenseSeat, error) {
+func (c *LicenseClient) ListSeats(ctx context.Context, licenseID int) ([]LicenseSeat, error) {
 	var out []LicenseSeat
 	offset := 0
 	const limit = 500
 	for {
-		raw, status, err := c.do(http.MethodGet, fmt.Sprintf("/licenses/%d/seats?limit=%d&offset=%d", licenseID, limit, offset), nil)
+		raw, status, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/licenses/%d/seats?limit=%d&offset=%d", licenseID, limit, offset), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -407,8 +418,8 @@ func (c *LicenseClient) ListSeats(licenseID int) ([]LicenseSeat, error) {
 	return out, nil
 }
 
-func (c *LicenseClient) patchSeat(licenseID, seatID int, body map[string]any) error {
-	raw, status, err := c.do(http.MethodPatch, fmt.Sprintf("/licenses/%d/seats/%d", licenseID, seatID), body)
+func (c *LicenseClient) patchSeat(ctx context.Context, licenseID, seatID int, body map[string]any) error {
+	raw, status, err := c.do(ctx, http.MethodPatch, fmt.Sprintf("/licenses/%d/seats/%d", licenseID, seatID), body)
 	if err != nil {
 		return err
 	}
@@ -425,23 +436,23 @@ func (c *LicenseClient) patchSeat(licenseID, seatID int, body map[string]any) er
 	return nil
 }
 
-func (c *LicenseClient) CheckoutSeatToUser(licenseID, seatID, userID int) error {
+func (c *LicenseClient) CheckoutSeatToUser(ctx context.Context, licenseID, seatID, userID int) error {
 	if c.dryRun {
 		return ErrDryRun
 	}
-	return c.patchSeat(licenseID, seatID, map[string]any{"assigned_to": userID})
+	return c.patchSeat(ctx, licenseID, seatID, map[string]any{"assigned_to": userID})
 }
-func (c *LicenseClient) CheckoutSeatToAsset(licenseID, seatID, assetID int) error {
+func (c *LicenseClient) CheckoutSeatToAsset(ctx context.Context, licenseID, seatID, assetID int) error {
 	if c.dryRun {
 		return ErrDryRun
 	}
-	return c.patchSeat(licenseID, seatID, map[string]any{"asset_id": assetID})
+	return c.patchSeat(ctx, licenseID, seatID, map[string]any{"asset_id": assetID})
 }
-func (c *LicenseClient) CheckinSeat(licenseID, seatID int) error {
+func (c *LicenseClient) CheckinSeat(ctx context.Context, licenseID, seatID int) error {
 	if c.dryRun {
 		return ErrDryRun
 	}
-	return c.patchSeat(licenseID, seatID, map[string]any{"assigned_to": nil, "asset_id": nil})
+	return c.patchSeat(ctx, licenseID, seatID, map[string]any{"assigned_to": nil, "asset_id": nil})
 }
 
 // maxSeatsPerChange mirrors Snipe-IT's `limit_change:10000` rule on a license's seats field
@@ -453,17 +464,17 @@ const maxSeatsPerChange = 10000
 // EnsureSeats grows the license's seat total to at least total, stepping in increments no
 // larger than maxSeatsPerChange so Snipe-IT's per-change limit never rejects the request.
 // A license with, say, 25000 seats is reached as 10000 (create) -> 20000 -> 25000.
-func (c *LicenseClient) EnsureSeats(licenseID, total int) error {
+func (c *LicenseClient) EnsureSeats(ctx context.Context, licenseID, total int) error {
 	if c.dryRun {
 		return ErrDryRun
 	}
-	current, err := c.licenseSeatCount(licenseID)
+	current, err := c.licenseSeatCount(ctx, licenseID)
 	if err != nil {
 		return err
 	}
 	for current < total {
 		next := min(current+maxSeatsPerChange, total)
-		if err := c.patchLicenseSeats(licenseID, next); err != nil {
+		if err := c.patchLicenseSeats(ctx, licenseID, next); err != nil {
 			return err
 		}
 		current = next
@@ -473,8 +484,8 @@ func (c *LicenseClient) EnsureSeats(licenseID, total int) error {
 
 // patchLicenseSeats sets the license's seat total in one request. The caller must keep each
 // change within maxSeatsPerChange of the current seat count.
-func (c *LicenseClient) patchLicenseSeats(licenseID, seats int) error {
-	raw, status, err := c.do(http.MethodPatch, fmt.Sprintf("/licenses/%d", licenseID), map[string]any{"seats": seats})
+func (c *LicenseClient) patchLicenseSeats(ctx context.Context, licenseID, seats int) error {
+	raw, status, err := c.do(ctx, http.MethodPatch, fmt.Sprintf("/licenses/%d", licenseID), map[string]any{"seats": seats})
 	if err != nil {
 		return err
 	}
@@ -493,8 +504,8 @@ func (c *LicenseClient) patchLicenseSeats(licenseID, seats int) error {
 
 // licenseSeatCount returns a license's current seat total via GET /licenses/{id}, which Snipe
 // returns as the bare license object.
-func (c *LicenseClient) licenseSeatCount(licenseID int) (int, error) {
-	raw, status, err := c.do(http.MethodGet, fmt.Sprintf("/licenses/%d", licenseID), nil)
+func (c *LicenseClient) licenseSeatCount(ctx context.Context, licenseID int) (int, error) {
+	raw, status, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/licenses/%d", licenseID), nil)
 	if err != nil {
 		return 0, err
 	}

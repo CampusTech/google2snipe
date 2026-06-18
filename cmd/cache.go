@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -32,7 +33,7 @@ func (c *cachingSnipe) usersCachePath() string {
 
 // ListAllUsers returns cached users when use-cache is set and the cache is
 // readable; otherwise it fetches from the API and refreshes the cache.
-func (c *cachingSnipe) ListAllUsers() ([]snipe.User, error) {
+func (c *cachingSnipe) ListAllUsers(ctx context.Context) ([]snipe.User, error) {
 	if c.useCache {
 		if data, err := os.ReadFile(c.usersCachePath()); err == nil {
 			var users []snipe.User
@@ -43,7 +44,7 @@ func (c *cachingSnipe) ListAllUsers() ([]snipe.User, error) {
 		}
 		c.log.Info("snipe-it user cache miss; fetching from API")
 	}
-	users, err := c.Client.ListAllUsers()
+	users, err := c.Client.ListAllUsers(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package snipe
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -50,7 +51,7 @@ func TestLicenseClientRetriesThenSucceeds(t *testing.T) {
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
 	// CheckoutSeatToAsset issues a single PATCH through do(); it must ride out the 429s.
-	if err := c.CheckoutSeatToAsset(1, 2, 3); err != nil {
+	if err := c.CheckoutSeatToAsset(context.Background(), 1, 2, 3); err != nil {
 		t.Fatalf("CheckoutSeatToAsset should retry past 429s and succeed, got %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 3 {
@@ -67,7 +68,7 @@ func TestLicenseClientGivesUpAfterPersistent429(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
-	err := c.CheckoutSeatToAsset(1, 2, 3)
+	err := c.CheckoutSeatToAsset(context.Background(), 1, 2, 3)
 	if err == nil || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("want a 429 error after exhausting retries, got %v", err)
 	}
@@ -102,7 +103,7 @@ func TestLicenseClientRetriesDroppedConnection(t *testing.T) {
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
 	// CheckoutSeatToAsset issues a PATCH (idempotent); the dropped first connection must be
 	// retried and the second attempt must succeed.
-	if err := c.CheckoutSeatToAsset(3, 3045, 999); err != nil {
+	if err := c.CheckoutSeatToAsset(context.Background(), 3, 3045, 999); err != nil {
 		t.Fatalf("CheckoutSeatToAsset should retry the dropped connection and succeed, got %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
@@ -122,7 +123,7 @@ func TestLicenseClientRetries5xxOnGet(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
-	if _, err := c.ListLicenses(); err != nil {
+	if _, err := c.ListLicenses(context.Background()); err != nil {
 		t.Fatalf("ListLicenses should retry a 5xx and succeed, got %v", err)
 	}
 	if got := atomic.LoadInt32(&calls); got != 2 {
@@ -133,7 +134,7 @@ func TestLicenseClientRetries5xxOnGet(t *testing.T) {
 func TestLicenseClientDryRunSentinel(t *testing.T) {
 	c := NewLicenseClient("https://snipe.invalid", "key", true /*dryRun*/, logrus.New())
 	// EnsureSeats is a pure mutator: in dry-run it must return ErrDryRun before any HTTP.
-	if err := c.EnsureSeats(1, 5); !errors.Is(err, ErrDryRun) {
+	if err := c.EnsureSeats(context.Background(), 1, 5); !errors.Is(err, ErrDryRun) {
 		t.Fatalf("EnsureSeats dry-run = %v, want ErrDryRun", err)
 	}
 }
@@ -164,7 +165,7 @@ func TestEnsureLicenseClampsCreateSeats(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
-	if _, err := c.EnsureLicense(LicenseSpec{Name: "Big", CategoryID: 1, Seats: 13000}); err != nil {
+	if _, err := c.EnsureLicense(context.Background(), LicenseSpec{Name: "Big", CategoryID: 1, Seats: 13000}); err != nil {
 		t.Fatalf("EnsureLicense: %v", err)
 	}
 	if createSeats != 10000 {
@@ -197,7 +198,7 @@ func TestEnsureSeatsStepsPastChangeLimit(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
-	if err := c.EnsureSeats(7, 25000); err != nil {
+	if err := c.EnsureSeats(context.Background(), 7, 25000); err != nil {
 		t.Fatalf("EnsureSeats: %v", err)
 	}
 	want := []int{20000, 25000} // 10000 -> 20000 (+10000) -> 25000 (+5000)
@@ -218,7 +219,7 @@ func TestEnsureLicenseSurfacesHTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "key", false /*not dry-run*/, logrus.New())
-	_, err := c.EnsureLicense(LicenseSpec{Name: "X", CategoryID: 1, Seats: 1})
+	_, err := c.EnsureLicense(context.Background(), LicenseSpec{Name: "X", CategoryID: 1, Seats: 1})
 	if err == nil || !strings.Contains(err.Error(), "HTTP 422") {
 		t.Fatalf("want HTTP 422 error, got %v", err)
 	}
@@ -226,13 +227,13 @@ func TestEnsureLicenseSurfacesHTTPError(t *testing.T) {
 
 func TestSeatMutatorsDryRun(t *testing.T) {
 	c := NewLicenseClient("https://snipe.invalid", "k", true /*dryRun*/, logrus.New())
-	if err := c.CheckoutSeatToUser(1, 2, 3); !errors.Is(err, ErrDryRun) {
+	if err := c.CheckoutSeatToUser(context.Background(), 1, 2, 3); !errors.Is(err, ErrDryRun) {
 		t.Fatalf("CheckoutSeatToUser = %v", err)
 	}
-	if err := c.CheckoutSeatToAsset(1, 2, 3); !errors.Is(err, ErrDryRun) {
+	if err := c.CheckoutSeatToAsset(context.Background(), 1, 2, 3); !errors.Is(err, ErrDryRun) {
 		t.Fatalf("CheckoutSeatToAsset = %v", err)
 	}
-	if err := c.CheckinSeat(1, 2); !errors.Is(err, ErrDryRun) {
+	if err := c.CheckinSeat(context.Background(), 1, 2); !errors.Is(err, ErrDryRun) {
 		t.Fatalf("CheckinSeat = %v", err)
 	}
 }
@@ -249,7 +250,7 @@ func TestListSeatsParsesAssignments(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
-	seats, err := c.ListSeats(42)
+	seats, err := c.ListSeats(context.Background(), 42)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +279,7 @@ func TestEnsureLicenseDryRunSkipsCreate(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "key", true /*dryRun*/, logrus.New())
-	_, err := c.EnsureLicense(LicenseSpec{Name: "X", CategoryID: 1, Seats: 1})
+	_, err := c.EnsureLicense(context.Background(), LicenseSpec{Name: "X", CategoryID: 1, Seats: 1})
 	if !errors.Is(err, ErrDryRun) {
 		t.Fatalf("EnsureLicense dry-run = %v, want ErrDryRun", err)
 	}
@@ -303,7 +304,7 @@ func TestEnsureLicenseCategoryCreates(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
-	id, err := c.EnsureLicenseCategory("Software Licenses")
+	id, err := c.EnsureLicenseCategory(context.Background(), "Software Licenses")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +329,7 @@ func TestEnsureLicenseCategoryFindsExisting(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
-	id, err := c.EnsureLicenseCategory("software licenses") // case-insensitive
+	id, err := c.EnsureLicenseCategory(context.Background(), "software licenses") // case-insensitive
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +354,7 @@ func TestEnsureLicenseUpdatesExisting(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 	c := NewLicenseClient(srv.URL, "k", false /*not dry-run*/, logrus.New())
-	lic, err := c.EnsureLicense(LicenseSpec{Name: "X", CostPerSeat: 9.99, CategoryID: 2, Reassignable: true, Seats: 3})
+	lic, err := c.EnsureLicense(context.Background(), LicenseSpec{Name: "X", CostPerSeat: 9.99, CategoryID: 2, Reassignable: true, Seats: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,5 +366,40 @@ func TestEnsureLicenseUpdatesExisting(t *testing.T) {
 	}
 	if patched["purchase_cost"] != 9.99 {
 		t.Errorf("purchase_cost = %v, want 9.99", patched["purchase_cost"])
+	}
+}
+
+// TestLicenseClientCancelAbortsBackoff proves the cancellation contract: when the
+// context is cancelled on the first 429 (with Retry-After: 1 it would otherwise sleep
+// a full second before retrying), do()'s cancel-aware backoff returns promptly with
+// context.Canceled instead of waiting out the backoff. The handler cancels the request's
+// own context after answering the first hit so the in-flight retry sleep is interrupted.
+func TestLicenseClientCancelAbortsBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		// Cancel the run on the first hit, then return a 429 with a 1s Retry-After. The
+		// client would normally sleep ~1s before retrying; the cancel must cut it short.
+		cancel()
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+
+	start := time.Now()
+	err := c.EnsureSeats(ctx, 1, 5) // first call (GET seat-count) rides the 429 retry path
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if elapsed >= 200*time.Millisecond {
+		t.Fatalf("took %v, want < 200ms (cancel must abort the Retry-After backoff promptly)", elapsed)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("server saw %d calls, want exactly 1 (no retry after cancel)", got)
 	}
 }

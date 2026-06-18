@@ -76,7 +76,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	engine := syncpkg.New(cfg, newCachingSnipe(sc, cfg.Sync.UseCache, cfg.Sync.CacheDir, snipeLog), syncLog)
-	if err := engine.Warm(); err != nil {
+	if err := engine.Warm(cmd.Context()); err != nil {
 		return fmt.Errorf("warm caches: %w", err)
 	}
 
@@ -87,7 +87,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	if syncSerial != "" {
 		devs = filterSerial(devs, syncSerial)
 	}
-	engine.SyncAll(devs)
+	engine.SyncAll(cmd.Context(), devs)
 	stats := engine.StatsSnapshot()
 	syncLog.WithFields(logrus.Fields{
 		"total": stats.Total, "created": stats.Created, "updated": stats.Updated,
