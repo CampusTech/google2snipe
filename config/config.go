@@ -51,6 +51,7 @@ type SyncConfig struct {
 	AssetTag         AssetTagConfig               `yaml:"asset_tag"`
 	FieldMapping     map[string]FieldMappingEntry `yaml:"field_mapping"`
 	Checkout         CheckoutConfig               `yaml:"checkout"`
+	Concurrency      int                          `yaml:"concurrency"`
 }
 
 type AssetTagConfig struct {
@@ -216,6 +217,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Sync.Checkout.Mode == "" {
 		c.Sync.Checkout.Mode = "assign"
+	}
+	if c.Sync.Concurrency == 0 {
+		c.Sync.Concurrency = 8
 	}
 }
 

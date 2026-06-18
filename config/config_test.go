@@ -187,6 +187,20 @@ licenses:
 	}
 }
 
+func TestConcurrencyDefaultsToEight(t *testing.T) {
+	p := writeTemp(t, `
+google: {credentials_file: /tmp/sa.json, impersonate_subject: a@b.com}
+snipe_it: {url: https://x, api_key: k, default_status_id: 1, default_category_id: 2}
+`)
+	cfg, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Sync.Concurrency != 8 {
+		t.Fatalf("Concurrency = %d, want 8 (default)", cfg.Sync.Concurrency)
+	}
+}
+
 // TestFullOnlyPathsWarningNotError verifies that a field_mapping with a FullOnly path
 // under projection=basic is a warning (Load succeeds) and the mapping is present.
 func TestFullOnlyPathsWarningNotError(t *testing.T) {
