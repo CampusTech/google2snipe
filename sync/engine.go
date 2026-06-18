@@ -391,6 +391,16 @@ func (e *Engine) createDev(dev google.Device, l *logrus.Entry, st *Stats) {
 	if e.cfg.Sync.SetName {
 		asset.Name = e.renderName(dev)
 	}
+	// Check the new asset out to its user AT CREATE time (one call instead of
+	// create + checkout) when the status is deployable and a user resolves. The
+	// guard mirrors applyCheckout's, so create and update pick the same user.
+	checkedOutAtCreate := false
+	if len(e.deployableStatuses) == 0 || e.deployableStatuses[asset.StatusID] {
+		if userID, ok := e.resolveCheckoutUser(dev); ok {
+			asset.AssignedToID = userID
+			checkedOutAtCreate = true
+		}
+	}
 	created, err := e.snipe.CreateAsset(asset)
 	if err != nil {
 		l.WithError(err).Error("create asset failed")
@@ -398,7 +408,9 @@ func (e *Engine) createDev(dev google.Device, l *logrus.Entry, st *Stats) {
 		return
 	}
 	l.WithField("snipe_id", created.ID).Info("created asset")
-	e.applyCheckout(dev, created, l)
+	if !checkedOutAtCreate {
+		e.applyCheckout(dev, created, l)
+	}
 	st.Created++
 }
 

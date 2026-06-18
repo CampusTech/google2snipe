@@ -387,19 +387,22 @@ func TestApplyCheckoutSkipsNonDeployableStatus(t *testing.T) {
 		t.Errorf("non-deployable device must not be checked out, got %v", stub.checkouts)
 	}
 
-	// ACTIVE -> default status 1 (deployable) -> IS checked out.
-	stub.checkouts = nil
+	// ACTIVE -> default status 1 (deployable) -> checked out AT CREATE
+	// (AssignedToID on the create, not a separate checkout call).
 	e.SyncDevice(dev(t, &admin.ChromeOsDevice{
 		SerialNumber: "D2", Status: "ACTIVE", Model: "Acer Chromebook 311", AnnotatedUser: "owner@example.com",
 	}))
 	found := false
-	for _, uid := range stub.checkouts {
-		if uid == 10 {
+	for _, a := range stub.created {
+		if a.Serial == "D2" && a.AssignedToID == 10 {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("deployable device should be checked out to user 10, got %v", stub.checkouts)
+		t.Errorf("deployable device should be checked out to user 10 at create, got created=%v", stub.created)
+	}
+	if len(stub.checkouts) != 0 {
+		t.Errorf("checkout-at-create should make no separate checkout call, got %v", stub.checkouts)
 	}
 }
 

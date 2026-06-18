@@ -706,8 +706,10 @@ func toSnipeAsset(a Asset) snipeit.Asset {
 	sa.Model.ID = a.ModelID
 	sa.StatusLabel.ID = a.StatusID
 	if a.AssignedToID != 0 {
-		sa.User = &snipeit.FlexUser{}
-		sa.User.User.ID = a.AssignedToID
+		// Snipe-IT honors assigned_user + checkout_to_type on writes to check the
+		// asset out (the assigned_to object is output-only and ignored on write).
+		sa.AssignedUser = a.AssignedToID
+		sa.CheckoutToType = "user"
 	}
 	if len(a.CustomFields) > 0 {
 		sa.CustomFields = a.CustomFields
