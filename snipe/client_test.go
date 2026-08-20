@@ -6,9 +6,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	snipeit "github.com/michellepellon/go-snipeit"
 	"github.com/sirupsen/logrus"
 )
 
@@ -152,4 +155,47 @@ func TestListAllAssetsPaginates(t *testing.T) {
 		assets[2].Serial != "S3" || assets[3].Serial != "S4" {
 		t.Fatalf("paging failed: %+v", assets)
 	}
+}
+
+// The limiter runs near the cap by design, so a healthy budget must stay at
+// debug and a low one must warn at most once per window — a long sync otherwise
+// buries its real output under thousands of identical lines.
+func TestRateLimitLoggerWarnsSparingly(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+	var mu sync.Mutex
+	warns := 0
+	log.AddHook(&countingHook{mu: &mu, n: &warns})
+	report := rateLimitLogger(log)
+
+	for i := 0; i < 50; i++ {
+		report(snipeit.RateLimit{Valid: true, Limit: 240, Remaining: 200, Reset: 30 * time.Second})
+	}
+	if warns != 0 {
+		t.Fatalf("healthy budget produced %d warnings, want 0", warns)
+	}
+
+	for i := 0; i < 50; i++ {
+		report(snipeit.RateLimit{Valid: true, Limit: 240, Remaining: 5, Reset: 30 * time.Second})
+	}
+	if warns != 1 {
+		t.Fatalf("low budget produced %d warnings, want 1 per window", warns)
+	}
+}
+
+// countingHook counts warn-and-above entries.
+type countingHook struct {
+	mu *sync.Mutex
+	n  *int
+}
+
+func (h *countingHook) Levels() []logrus.Level {
+	return []logrus.Level{logrus.WarnLevel, logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel}
+}
+
+func (h *countingHook) Fire(*logrus.Entry) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	*h.n++
+	return nil
 }

@@ -43,4 +43,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-replace github.com/michellepellon/go-snipeit => github.com/CampusTech/go-snipeit v0.0.0-20260820165655-4da368d81bee
+replace github.com/michellepellon/go-snipeit => github.com/CampusTech/go-snipeit v0.0.0-20260820171155-0f2936b38d11

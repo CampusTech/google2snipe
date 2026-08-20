@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	snipeit "github.com/michellepellon/go-snipeit"
@@ -179,22 +180,46 @@ func retryPolicy() *snipeit.RetryPolicy {
 	return p
 }
 
-// rateLimitLogger reports the server's remaining budget: at debug normally, and
-// at warn once a quarter of the window's allowance is left, which is the point
-// where a long sync is at risk of being throttled.
+// rateLimitLogger reports the server's remaining budget. Every response carries
+// it, and the limiter deliberately runs near the cap, so the routine case is
+// debug-level; a warning fires only when the budget is nearly gone (a tenth of
+// the window left) or spent, and at most once per window so a long sync doesn't
+// bury its real output under thousands of identical lines.
 func rateLimitLogger(logger *logrus.Logger) func(snipeit.RateLimit) {
+	var mu sync.Mutex
+	var nextWarn time.Time
+	shouldWarn := func(now time.Time) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if now.Before(nextWarn) {
+			return false
+		}
+		nextWarn = now.Add(warnInterval)
+		return true
+	}
 	return func(rl snipeit.RateLimit) {
 		f := logrus.Fields{"limit": rl.Limit, "remaining": rl.Remaining, "resets_in": rl.Reset.String()}
-		switch {
-		case rl.Exhausted():
-			logger.WithFields(f).Warn("snipe-it rate limit exhausted; waiting for the window to reset")
-		case rl.Limit > 0 && rl.Remaining*4 <= rl.Limit:
-			logger.WithFields(f).Warn("snipe-it rate limit budget running low")
-		default:
+		low := rl.Limit > 0 && rl.Remaining*10 <= rl.Limit
+		if !rl.Exhausted() && !low {
 			logger.WithFields(f).Debug("snipe-it rate limit")
+			return
 		}
+		if !shouldWarn(time.Now()) {
+			logger.WithFields(f).Debug("snipe-it rate limit")
+			return
+		}
+		if rl.Exhausted() {
+			logger.WithFields(f).Warn("snipe-it rate limit exhausted; waiting for the window to reset")
+			return
+		}
+		logger.WithFields(f).Warn("snipe-it rate limit budget nearly spent")
 	}
 }
+
+// warnInterval is the minimum gap between rate-limit warnings — one window's
+// worth, since the budget refills on that cadence and re-warning inside a
+// window says nothing new.
+const warnInterval = time.Minute
 
 // Ping fetches one record to verify the API key works and returns a short
 // status string. Used by the connectivity-check command.

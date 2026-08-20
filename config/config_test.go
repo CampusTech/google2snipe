@@ -264,6 +264,7 @@ func TestDefaultScopesCoverDirectoryUsers(t *testing.T) {
 		t.Errorf("configured scopes = %v, want them left as %v", c.Google.Scopes, custom)
 	}
 }
+
 // The plan name drives the client's pacing, and the pre-preset booleans must
 // keep working for configs written before the presets existed.
 func TestRateLimitSettingParsing(t *testing.T) {
