@@ -53,11 +53,12 @@ func runLicensesSync(cmd *cobra.Command, args []string) error {
 	cfg.Sync.UseCache = cfg.Sync.UseCache || licUseCache
 
 	// asset lookups via the existing go-snipeit-backed client
-	sc, err := snipe.New(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, cfg.Sync.DryRun, cfg.Sync.RateLimit, snipeLog)
+	sc, err := snipe.New(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, cfg.Sync.DryRun, string(cfg.Sync.RateLimit), snipeLog)
 	if err != nil {
 		return err
 	}
-	lc := snipe.NewLicenseClient(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, cfg.Sync.DryRun, licLog)
+	// The license client shares sc's connection, so both spend one rate-limit budget.
+	lc := snipe.NewLicenseClient(sc)
 	engine := licensesync.New(lc, licLog, licensesync.WithConcurrency(cfg.Sync.Concurrency))
 	scopes := config.EffectiveLicenseScopes(cfg)
 

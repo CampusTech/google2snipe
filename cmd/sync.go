@@ -71,7 +71,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		cfg.Sync.Concurrency = syncConcurrency
 	}
 
-	sc, err := snipe.New(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, cfg.Sync.DryRun, cfg.Sync.RateLimit, snipeLog)
+	sc, err := snipe.New(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, cfg.Sync.DryRun, string(cfg.Sync.RateLimit), snipeLog)
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func writeTemp(t *testing.T, body string) string {
@@ -261,4 +263,53 @@ func TestDefaultScopesCoverDirectoryUsers(t *testing.T) {
 	if !reflect.DeepEqual(c.Google.Scopes, custom) {
 		t.Errorf("configured scopes = %v, want them left as %v", c.Google.Scopes, custom)
 	}
+}
+// The plan name drives the client's pacing, and the pre-preset booleans must
+// keep working for configs written before the presets existed.
+func TestRateLimitSettingParsing(t *testing.T) {
+	cases := map[string]RateLimitSetting{
+		"basic":          RateLimitBasic,
+		"small_business": RateLimitSmallBusiness,
+		"small-business": RateLimitSmallBusiness,
+		"Dedicated":      RateLimitDedicated,
+		"true":           RateLimitSmallBusiness,
+		"false":          RateLimitDedicated,
+	}
+	for in, want := range cases {
+		var got struct {
+			RateLimit RateLimitSetting `yaml:"rate_limit"`
+		}
+		if err := yaml.Unmarshal([]byte("rate_limit: "+in), &got); err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+		if got.RateLimit != want {
+			t.Errorf("rate_limit: %s parsed as %q, want %q", in, got.RateLimit, want)
+		}
+	}
+}
+
+func TestRateLimitSettingDefaultsAndValidates(t *testing.T) {
+	c := &Config{}
+	c.applyDefaults()
+	if c.Sync.RateLimit != RateLimitSmallBusiness {
+		t.Errorf("default rate_limit = %q, want small_business", c.Sync.RateLimit)
+	}
+
+	c = validConfigForRateLimit()
+	c.Sync.RateLimit = "enterprise"
+	if err := c.Validate(); err == nil {
+		t.Error("an unknown plan name must fail validation rather than silently disabling limiting")
+	}
+}
+
+// validConfigForRateLimit returns a config that passes Validate, so the test
+// above fails only on the rate-limit field.
+func validConfigForRateLimit() *Config {
+	c := &Config{}
+	c.Google.CredentialsFile = "creds.json"
+	c.Google.ImpersonateSubject = "admin@example.com"
+	c.SnipeIT.URL = "https://snipe.example.com"
+	c.SnipeIT.APIKey = "key"
+	c.applyDefaults()
+	return c
 }

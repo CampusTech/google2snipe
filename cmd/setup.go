@@ -27,7 +27,7 @@ func runSetup(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	sc, err := snipe.New(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, setupDryRun, cfg.Sync.RateLimit, snipeLog)
+	sc, err := snipe.New(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, setupDryRun, string(cfg.Sync.RateLimit), snipeLog)
 	if err != nil {
 		return err
 	}

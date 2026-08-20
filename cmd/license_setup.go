@@ -62,8 +62,11 @@ func runLicensesSetup(cmd *cobra.Command, args []string) error {
 			if catName == "" {
 				catName = "Software Licenses"
 			}
-			lc := snipe.NewLicenseClient(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, false, licLog)
-			id, err := lc.EnsureLicenseCategory(cmd.Context(), catName)
+			sc, err := snipe.New(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, false, string(cfg.Sync.RateLimit), licLog)
+			if err != nil {
+				return err
+			}
+			id, err := snipe.NewLicenseClient(sc).EnsureLicenseCategory(cmd.Context(), catName)
 			if err != nil {
 				return fmt.Errorf("creating license category: %w", err)
 			}

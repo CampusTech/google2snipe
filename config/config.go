@@ -41,7 +41,7 @@ type SnipeITConfig struct {
 type SyncConfig struct {
 	DryRun           bool                         `yaml:"dry_run"`
 	Force            bool                         `yaml:"force"`
-	RateLimit        bool                         `yaml:"rate_limit"`
+	RateLimit        RateLimitSetting             `yaml:"rate_limit"`
 	UpdateOnly       bool                         `yaml:"update_only"`
 	UseCache         bool                         `yaml:"use_cache"`
 	CacheDir         string                       `yaml:"cache_dir"`
@@ -52,6 +52,40 @@ type SyncConfig struct {
 	FieldMapping     map[string]FieldMappingEntry `yaml:"field_mapping"`
 	Checkout         CheckoutConfig               `yaml:"checkout"`
 	Concurrency      int                          `yaml:"concurrency"`
+}
+
+// RateLimitSetting names the Snipe-IT plan whose request budget the client
+// should pace itself against. Snipe-IT Cloud publishes a per-minute allowance
+// per plan, and the client tightens further from the X-Ratelimit-* headers the
+// API returns on every response.
+//
+// Accepted values: "basic" (120/min), "small_business" (240/min), "dedicated"
+// (unmetered). The legacy booleans still parse: true is small_business,
+// false is dedicated (i.e. no client-side limiting).
+type RateLimitSetting string
+
+const (
+	RateLimitBasic         RateLimitSetting = "basic"
+	RateLimitSmallBusiness RateLimitSetting = "small_business"
+	RateLimitDedicated     RateLimitSetting = "dedicated"
+)
+
+// UnmarshalYAML accepts the plan names and the pre-preset booleans.
+func (r *RateLimitSetting) UnmarshalYAML(value *yaml.Node) error {
+	raw := strings.TrimSpace(value.Value)
+	switch strings.ToLower(raw) {
+	case "true", "yes", "on":
+		*r = RateLimitSmallBusiness
+		return nil
+	case "false", "no", "off":
+		*r = RateLimitDedicated
+		return nil
+	case "":
+		*r = ""
+		return nil
+	}
+	*r = RateLimitSetting(strings.ToLower(strings.ReplaceAll(raw, "-", "_")))
+	return nil
 }
 
 type AssetTagConfig struct {
@@ -237,6 +271,9 @@ func (c *Config) applyDefaults() {
 	if c.Sync.Concurrency == 0 {
 		c.Sync.Concurrency = 8
 	}
+	if c.Sync.RateLimit == "" {
+		c.Sync.RateLimit = RateLimitSmallBusiness
+	}
 }
 
 // Validate fails fast on missing required fields and bad enum values.
@@ -255,6 +292,11 @@ func (c *Config) Validate() error {
 	}
 	if c.SnipeIT.APIKey == "" {
 		return fmt.Errorf("snipe_it.api_key is required")
+	}
+	switch c.Sync.RateLimit {
+	case RateLimitBasic, RateLimitSmallBusiness, RateLimitDedicated:
+	default:
+		return fmt.Errorf("sync.rate_limit must be one of basic, small_business, dedicated, got %q", c.Sync.RateLimit)
 	}
 	if c.SnipeIT.DefaultStatusID == 0 {
 		return fmt.Errorf("snipe_it.default_status_id is required")

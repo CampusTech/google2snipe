@@ -31,7 +31,7 @@ func runTest(cmd *cobra.Command, args []string) error {
 	}
 	googleLog.WithField("customer_id", customer).Warn("google admin sdk: OK")
 
-	sc, err := snipe.New(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, true, cfg.Sync.RateLimit, snipeLog)
+	sc, err := snipe.New(cfg.SnipeIT.URL, cfg.SnipeIT.APIKey, true, string(cfg.Sync.RateLimit), snipeLog)
 	if err != nil {
 		return err
 	}
