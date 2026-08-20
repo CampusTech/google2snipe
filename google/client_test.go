@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/sirupsen/logrus"
@@ -79,5 +80,18 @@ func TestListAllChromeOSDevicesFilters(t *testing.T) {
 	}
 	if gotQuery != wantQuery {
 		t.Errorf("query: got %q, want %q", gotQuery, wantQuery)
+	}
+}
+
+// The default scope strings live in config (which cannot import this package),
+// so pin them to the Admin SDK's own constants here — a typo or a drift in
+// either list fails this test rather than a live 403.
+func TestDefaultScopesMatchAdminConstants(t *testing.T) {
+	want := []string{
+		admin.AdminDirectoryDeviceChromeosReadonlyScope,
+		admin.AdminDirectoryUserReadonlyScope,
+	}
+	if got := DefaultScopes(); !reflect.DeepEqual(got, want) {
+		t.Errorf("DefaultScopes() = %v, want %v", got, want)
 	}
 }
