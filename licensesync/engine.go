@@ -62,9 +62,9 @@ func New(lc LicenseClient, logger *logrus.Logger, opts ...Option) *Engine {
 
 func isDryRun(err error) bool { return errors.Is(err, snipe.ErrDryRun) }
 
-// regrowMaxAttempts bounds how many times a reconcile will regrow a seat pool
-// that another writer keeps draining, so a losing race ends in reported errors
-// rather than an unbounded grow/checkout loop.
+// regrowMaxAttempts bounds how many times a reconcile will re-read and regrow a
+// seat pool that another writer keeps draining, so a losing race ends in
+// reported errors rather than an unbounded grow/checkout loop.
 const regrowMaxAttempts = 3
 
 // growPool raises the license's seat total to cover need beyond free, then
@@ -83,13 +83,18 @@ func (e *Engine) growPool(ctx context.Context, licenseID, seatCount, need, free 
 	if err != nil {
 		return nil, false, err
 	}
+	return freeSeatIDs(seats), false, nil
+}
+
+// freeSeatIDs returns the ids of the seats holding neither a user nor an asset.
+func freeSeatIDs(seats []snipe.LicenseSeat) []int {
 	var out []int
 	for _, s := range seats {
 		if s.AssignedUserID == 0 && s.AssignedAssetID == 0 {
 			out = append(out, s.ID)
 		}
 	}
-	return out, false, nil
+	return out
 }
 
 // parallelFor runs fn(0..n-1) across at most `workers` goroutines and blocks until all
@@ -307,7 +312,8 @@ func (e *Engine) Reconcile(ctx context.Context, spec snipe.LicenseSpec, desired 
 	//    grown and retried rather than failing every remaining holder. Retries are bounded:
 	//    a pool that stays short after regrowMaxAttempts rounds means something is refusing
 	//    to give us seats, and the holders left over are reported as errors.
-	for attempt := 1; len(need) > 0; attempt++ {
+	regrows := 0
+	for len(need) > 0 {
 		k := len(need)
 		if len(free) < k {
 			k = len(free)
@@ -355,18 +361,27 @@ func (e *Engine) Reconcile(ctx context.Context, spec snipe.LicenseSpec, desired 
 		if len(need) == 0 || growthDryRun || ctx.Err() != nil {
 			break
 		}
-		if attempt >= regrowMaxAttempts {
+		if regrows >= regrowMaxAttempts {
 			break
 		}
-		// Short pool: someone else took the seats. Grow for what's left and go again.
+		regrows++
+		// Short pool: someone else took the seats. Re-read the license before
+		// growing — seats may also have been RELEASED since the last listing,
+		// and creating more on top of those would leave the license padded with
+		// seats nobody asked for (and, on a paid license, billed for).
 		e.log.WithFields(logrus.Fields{
-			"license": lic.Name, "holders_waiting": len(need), "attempt": attempt,
-		}).Warn("free seats exhausted mid-run; growing the pool again")
+			"license": lic.Name, "holders_waiting": len(need), "attempt": regrows,
+		}).Warn("free seats exhausted mid-run; re-reading the license")
 		seatsNow, lerr := e.lc.ListSeats(ctx, lic.ID)
 		if lerr != nil {
 			return st, lerr
 		}
-		grown, dry, gerr := e.growPool(ctx, lic.ID, len(seatsNow), len(need), 0)
+		freeNow := freeSeatIDs(seatsNow)
+		if len(freeNow) >= len(need) {
+			free = freeNow // enough came back on their own; no need to grow
+			continue
+		}
+		grown, dry, gerr := e.growPool(ctx, lic.ID, len(seatsNow), len(need), len(freeNow))
 		if gerr != nil {
 			return st, gerr
 		}
