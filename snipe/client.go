@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -225,19 +226,45 @@ func (c *Client) GetAssetBySerial(ctx context.Context, serial string) ([]Asset, 
 
 // ListAllAssets pages through every hardware asset in Snipe-IT and returns them
 // all mapped to the local Asset type.
+//
+// Snipe's default /hardware listing HIDES assets whose status label is of type
+// "archived", so archived assets are fetched in a second pass (?status=Archived).
+// Without them the warm cache misses every previously-archived device and the
+// sync tries to re-create it, which Snipe rejects ("The serial must be unique").
 func (c *Client) ListAllAssets(ctx context.Context) ([]Asset, error) {
+	out, err := c.listAssetsPaged(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	archived, err := c.listAssetsPaged(ctx, "Archived")
+	if err != nil {
+		return nil, err
+	}
+	return append(out, archived...), nil
+}
+
+// listAssetsPaged pages /hardware, optionally filtered to a status class
+// ("Archived", "Deployed", ...). An empty status uses Snipe's default listing.
+func (c *Client) listAssetsPaged(ctx context.Context, status string) ([]Asset, error) {
 	var out []Asset
 	offset := 0
 	const limit = 500
 	for {
-		var resp *snipeit.AssetsResponse
+		u := fmt.Sprintf("api/v1/hardware?limit=%d&offset=%d", limit, offset)
+		if status != "" {
+			u += "&status=" + url.QueryEscape(status)
+		}
+		var resp snipeit.AssetsResponse
 		err := c.retry429(ctx, "list assets", func() (*http.Response, error) {
-			r, httpResp, e := c.sc.Assets.ListContext(ctx, &snipeit.ListOptions{Limit: limit, Offset: offset})
-			resp = r
-			return httpResp, e
+			resp = snipeit.AssetsResponse{}
+			req, e := c.sc.NewRequest(http.MethodGet, u, nil)
+			if e != nil {
+				return nil, e
+			}
+			return c.sc.DoContext(ctx, req, &resp)
 		})
 		if err != nil {
-			return nil, fmt.Errorf("listing assets: %w", err)
+			return nil, fmt.Errorf("listing assets (status=%q): %w", status, err)
 		}
 		for _, a := range resp.Rows {
 			out = append(out, fromSnipeAsset(a))

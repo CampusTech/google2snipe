@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -191,6 +192,31 @@ func TestSyncDeviceUpdatesWhenPresent(t *testing.T) {
 	}
 	if a.CustomFields["_snipeit_chrome_status_1"] != "DISABLED" {
 		t.Errorf("patch custom fields = %+v", a.CustomFields)
+	}
+}
+
+// A serial missing from the warm cache but present in Snipe must be updated,
+// not counted as an error, when Snipe rejects the create as non-unique.
+func TestSyncDeviceCreateCollisionFallsBackToUpdate(t *testing.T) {
+	stub := &stubSnipe{
+		bySerial:     map[string][]snipe.Asset{"S1": {{ID: 7, Serial: "S1", StatusID: 1, CustomFields: map[string]string{}}}},
+		hideFromList: true,
+		createErr:    errors.New(`creating asset failed: {"serial":["The serial must be unique."]}`),
+	}
+	cfg := baseCfg()
+	cfg.Sync.Force = true
+	e := New(cfg, stub, logrus.New())
+	if err := e.Warm(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.SyncDevice(context.Background(), dev(t, &admin.ChromeOsDevice{
+		SerialNumber: "S1", Status: "DISABLED", Model: "Acer Chromebook 311",
+	}))
+	if _, ok := stub.patched[7]; !ok {
+		t.Fatalf("expected fallback PatchAsset(7, ...), patched=%+v", stub.patched)
+	}
+	if e.stats.Errors != 0 || e.stats.Updated != 1 {
+		t.Errorf("stats = %+v, want 0 errors / 1 updated", e.stats)
 	}
 }
 

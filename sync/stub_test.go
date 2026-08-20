@@ -33,6 +33,8 @@ type stubSnipe struct {
 	users        []snipe.User
 	statusLabels []snipe.StatusLabel
 	nextID       int
+	createErr    error // when set, CreateAsset fails with it
+	hideFromList bool  // when set, ListAllAssets returns nothing (stale warm cache)
 }
 
 func (s *stubSnipe) GetAssetBySerial(_ context.Context, serial string) ([]snipe.Asset, error) {
@@ -41,6 +43,9 @@ func (s *stubSnipe) GetAssetBySerial(_ context.Context, serial string) ([]snipe.
 func (s *stubSnipe) CreateAsset(_ context.Context, a snipe.Asset) (snipe.Asset, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.createErr != nil {
+		return snipe.Asset{}, s.createErr
+	}
 	s.nextID++
 	a.ID = s.nextID
 	s.created = append(s.created, a)
@@ -97,6 +102,9 @@ func (s *stubSnipe) ListAllStatusLabels(_ context.Context) ([]snipe.StatusLabel,
 }
 func (s *stubSnipe) ListAllAssets(_ context.Context) ([]snipe.Asset, error) {
 	var out []snipe.Asset
+	if s.hideFromList {
+		return nil, nil
+	}
 	for _, list := range s.bySerial {
 		out = append(out, list...)
 	}
