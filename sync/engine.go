@@ -390,6 +390,9 @@ func (e *Engine) syncDevice(ctx context.Context, dev google.Device, st *Stats) {
 	}
 }
 
+// serialOf returns the device's trimmed serial.
+func serialOf(dev google.Device) string { return strings.TrimSpace(dev.SerialNumber) }
+
 // isContextErr reports whether err is a context cancellation/deadline, i.e. a graceful
 // Ctrl-C shutdown rather than a real sync failure.
 func isContextErr(err error) bool {
@@ -439,6 +442,19 @@ func (e *Engine) createDev(ctx context.Context, dev google.Device, l *logrus.Ent
 			l.WithError(err).Debug("cancelled during create")
 			st.Skipped++
 			return
+		}
+		// The warm cache can miss an asset (Snipe paging, or a record added
+		// after warm), so a "must be unique" rejection means it exists after
+		// all: look it up and update instead of dropping the device.
+		if strings.Contains(err.Error(), "must be unique") {
+			if found, lerr := e.snipe.GetAssetBySerial(ctx, serialOf(dev)); lerr == nil && len(found) > 0 {
+				l.WithField("snipe_id", found[0].ID).Warn("asset missing from warm cache; updating existing record")
+				e.mu.Lock()
+				e.assetIndex[strings.ToLower(found[0].Serial)] = found[0]
+				e.mu.Unlock()
+				e.updateDev(ctx, dev, found[0], l, st)
+				return
+			}
 		}
 		l.WithError(err).Error("create asset failed")
 		st.Errors++

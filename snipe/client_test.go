@@ -83,13 +83,19 @@ func TestCreateAssetRetriesOn5xx(t *testing.T) {
 func TestListAllAssetsPaginates(t *testing.T) {
 	page1 := `{"total":2,"rows":[{"id":1,"asset_tag":"A1","serial":"S1"}]}`
 	page2 := `{"total":2,"rows":[{"id":2,"asset_tag":"A2","serial":"S2"}]}`
+	// Archived assets are hidden from the default listing and must be fetched
+	// with ?status=Archived — otherwise the sync re-creates them.
+	archived := `{"total":1,"rows":[{"id":3,"asset_tag":"A3","serial":"S3"}]}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if strings.Contains(r.URL.RawQuery, "offset=500") {
+		switch {
+		case r.URL.Query().Get("status") == "Archived":
+			_, _ = w.Write([]byte(archived))
+		case strings.Contains(r.URL.RawQuery, "offset=500"):
 			_, _ = w.Write([]byte(page2))
-			return
+		default:
+			_, _ = w.Write([]byte(page1))
 		}
-		_, _ = w.Write([]byte(page1))
 	}))
 	defer srv.Close()
 	c, err := New(srv.URL, "k", false, false, logrus.New())
@@ -100,7 +106,7 @@ func TestListAllAssetsPaginates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(assets) != 2 || assets[0].Serial != "S1" || assets[1].Serial != "S2" {
+	if len(assets) != 3 || assets[0].Serial != "S1" || assets[1].Serial != "S2" || assets[2].Serial != "S3" {
 		t.Fatalf("paging failed: %+v", assets)
 	}
 }
