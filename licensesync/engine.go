@@ -62,6 +62,41 @@ func New(lc LicenseClient, logger *logrus.Logger, opts ...Option) *Engine {
 
 func isDryRun(err error) bool { return errors.Is(err, snipe.ErrDryRun) }
 
+// regrowMaxAttempts bounds how many times a reconcile will re-read and regrow a
+// seat pool that another writer keeps draining, so a losing race ends in
+// reported errors rather than an unbounded grow/checkout loop.
+const regrowMaxAttempts = 3
+
+// growPool raises the license's seat total to cover need beyond free, then
+// re-lists to learn the new seat IDs, returning the free ones. The bool reports
+// a dry-run, where no seats are created and the caller counts intent instead.
+func (e *Engine) growPool(ctx context.Context, licenseID, seatCount, need, free int) ([]int, bool, error) {
+	newTotal := seatCount + (need - free)
+	switch err := e.lc.EnsureSeats(ctx, licenseID, newTotal); {
+	case err == nil:
+	case isDryRun(err):
+		return nil, true, nil
+	default:
+		return nil, false, err
+	}
+	seats, err := e.lc.ListSeats(ctx, licenseID)
+	if err != nil {
+		return nil, false, err
+	}
+	return freeSeatIDs(seats), false, nil
+}
+
+// freeSeatIDs returns the ids of the seats holding neither a user nor an asset.
+func freeSeatIDs(seats []snipe.LicenseSeat) []int {
+	var out []int
+	for _, s := range seats {
+		if s.AssignedUserID == 0 && s.AssignedAssetID == 0 {
+			out = append(out, s.ID)
+		}
+	}
+	return out
+}
+
 // parallelFor runs fn(0..n-1) across at most `workers` goroutines and blocks until all
 // complete. fn must be safe for concurrent calls across distinct i; callers here give each
 // i its own result slot and a distinct seat so there is no shared mutable state.
@@ -258,77 +293,114 @@ func (e *Engine) Reconcile(ctx context.Context, spec snipe.LicenseSpec, desired 
 	// 3) Grow seats if there aren't enough free ones, then re-list to learn new seat IDs.
 	growthDryRun := false
 	if len(need) > len(free) {
-		newTotal := len(seats) + (len(need) - len(free))
-		switch err := e.lc.EnsureSeats(ctx, lic.ID, newTotal); {
-		case err == nil:
-			seats2, lerr := e.lc.ListSeats(ctx, lic.ID)
-			if lerr != nil {
-				return st, lerr
-			}
-			free = free[:0]
-			for _, s := range seats2 {
-				if s.AssignedUserID == 0 && s.AssignedAssetID == 0 {
-					free = append(free, s.ID)
-				}
-			}
-		case isDryRun(err):
-			growthDryRun = true
-		default:
+		grown, dry, err := e.growPool(ctx, lic.ID, len(seats), len(need), len(free))
+		if err != nil {
 			return st, err
+		}
+		growthDryRun = dry
+		if !dry {
+			free = grown
 		}
 	}
 
 	// 4) Check out holders that need a seat. Pre-pair each holder with a distinct free seat
 	//    so concurrent workers never contend for the same seat, then run the checkouts in
-	//    parallel. Holders beyond the free-seat supply are handled afterward (dry-run growth
-	//    counts them as intended; otherwise each is a "no free seat" error).
-	k := len(need)
-	if len(free) < k {
-		k = len(free)
-	}
-	if k > 0 {
-		seatFor := make([]int, k)
-		copy(seatFor, free[:k])
-		coOK := make([]bool, k)
-		coErr := make([]error, k)
-		parallelFor(k, workers, func(i int) {
-			// Stop issuing new seat PATCHes promptly once ctx is cancelled (Ctrl-C);
-			// the slot stays zero-valued so it's neither counted nor errored.
-			if ctx.Err() != nil {
-				return
-			}
-			// Worker invariant: write ONLY this i's slots (coOK[i]/coErr[i]) and read its
-			// pre-assigned seatFor[i]. st.CheckedOut/firstErr are aggregated after the barrier.
-			t := need[i]
-			seatID := seatFor[i]
-			var cerr error
-			if t.IsUser {
-				cerr = e.lc.CheckoutSeatToUser(ctx, lic.ID, seatID, t.ID)
-			} else {
-				cerr = e.lc.CheckoutSeatToAsset(ctx, lic.ID, seatID, t.ID)
-			}
-			if cerr != nil && !isDryRun(cerr) {
-				e.log.WithError(cerr).WithField("holder", t.ID).Warn("seat checkout failed")
-				coErr[i] = cerr
-				return
-			}
-			coOK[i] = true
-		})
-		for i := 0; i < k; i++ {
-			if coOK[i] {
-				st.CheckedOut++
-			}
-			if coErr[i] != nil {
-				recordErr(coErr[i])
-			}
+	//    parallel.
+	//
+	//    The pool can be emptied between the listing and the checkouts by anything else
+	//    writing to the license — a second sync, or an admin in the UI — so a short pool is
+	//    grown and retried rather than failing every remaining holder. Retries are bounded:
+	//    a pool that stays short after regrowMaxAttempts rounds means something is refusing
+	//    to give us seats, and the holders left over are reported as errors.
+	regrows := 0
+	for len(need) > 0 {
+		k := len(need)
+		if len(free) < k {
+			k = len(free)
 		}
+		if k > 0 {
+			seatFor := make([]int, k)
+			copy(seatFor, free[:k])
+			coOK := make([]bool, k)
+			coErr := make([]error, k)
+			parallelFor(k, workers, func(i int) {
+				// Stop issuing new seat PATCHes promptly once ctx is cancelled (Ctrl-C);
+				// the slot stays zero-valued so it's neither counted nor errored.
+				if ctx.Err() != nil {
+					return
+				}
+				// Worker invariant: write ONLY this i's slots (coOK[i]/coErr[i]) and read its
+				// pre-assigned seatFor[i]. st.CheckedOut/firstErr are aggregated after the barrier.
+				t := need[i]
+				seatID := seatFor[i]
+				var cerr error
+				if t.IsUser {
+					cerr = e.lc.CheckoutSeatToUser(ctx, lic.ID, seatID, t.ID)
+				} else {
+					cerr = e.lc.CheckoutSeatToAsset(ctx, lic.ID, seatID, t.ID)
+				}
+				if cerr != nil && !isDryRun(cerr) {
+					e.log.WithError(cerr).WithField("holder", t.ID).Warn("seat checkout failed")
+					coErr[i] = cerr
+					return
+				}
+				coOK[i] = true
+			})
+			for i := 0; i < k; i++ {
+				if coOK[i] {
+					st.CheckedOut++
+				}
+				if coErr[i] != nil {
+					recordErr(coErr[i])
+				}
+			}
+			// Every seat in free[:k] is now spoken for; the next round replaces
+			// the pool wholesale from a fresh listing, so only need is carried.
+			need = need[k:]
+		}
+		if len(need) == 0 || growthDryRun || ctx.Err() != nil {
+			break
+		}
+		if regrows >= regrowMaxAttempts {
+			break
+		}
+		regrows++
+		// Short pool: someone else took the seats. Re-read the license before
+		// growing — seats may also have been RELEASED since the last listing,
+		// and creating more on top of those would leave the license padded with
+		// seats nobody asked for (and, on a paid license, billed for).
+		e.log.WithFields(logrus.Fields{
+			"license": lic.Name, "holders_waiting": len(need), "attempt": regrows,
+		}).Warn("free seats exhausted mid-run; re-reading the license")
+		seatsNow, lerr := e.lc.ListSeats(ctx, lic.ID)
+		if lerr != nil {
+			return st, lerr
+		}
+		freeNow := freeSeatIDs(seatsNow)
+		if len(freeNow) >= len(need) {
+			free = freeNow // enough came back on their own; no need to grow
+			continue
+		}
+		grown, dry, gerr := e.growPool(ctx, lic.ID, len(seatsNow), len(need), len(freeNow))
+		if gerr != nil {
+			return st, gerr
+		}
+		if dry {
+			growthDryRun = true
+			break
+		}
+		if len(grown) == 0 {
+			break // nothing came back; report the leftovers below rather than spinning
+		}
+		free = grown
 	}
+
 	// If the checkout phase was cancelled, report the cancellation rather than a clean
 	// reconcile (cancelled workers leave their slots zero-valued, so firstErr can be nil).
 	if err := ctx.Err(); err != nil {
 		return st, err
 	}
-	for _, t := range need[k:] {
+	for _, t := range need {
 		if growthDryRun {
 			e.log.WithField("license", lic.Name).WithField("holder", t.ID).
 				Warn("[dry-run] would add a seat and check out holder")

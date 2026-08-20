@@ -346,3 +346,165 @@ func TestReconcilePreCancelledDoesNoCheckouts(t *testing.T) {
 		t.Fatalf("CheckedOut = %d, want 0 under a cancelled context", st.CheckedOut)
 	}
 }
+
+// stealSeatsLC drains the free-seat pool on the engine's post-growth re-list,
+// reproducing what a concurrent sync (or an admin working in the UI) does to a
+// run in flight: the seats the engine just grew are gone before it can use
+// them. The engine must notice and grow again rather than failing every
+// remaining holder with "no free seat available".
+type stealSeatsLC struct {
+	stubLC
+	lists int
+}
+
+func (s *stealSeatsLC) ListSeats(ctx context.Context, licenseID int) ([]snipe.LicenseSeat, error) {
+	s.mu.Lock()
+	s.lists++
+	// Steal on the second listing only: the first models a healthy read, the
+	// second is the one the engine performs right after growing the pool.
+	if s.lists == 2 {
+		for i := range s.seats {
+			if s.seats[i].AssignedUserID == 0 && s.seats[i].AssignedAssetID == 0 {
+				s.seats[i].AssignedAssetID = 9999
+			}
+		}
+	}
+	seats := append([]snipe.LicenseSeat(nil), s.seats...)
+	s.mu.Unlock()
+	return seats, nil
+}
+
+func TestReconcileRegrowsWhenSeatsAreTakenMidRun(t *testing.T) {
+	lc := &stealSeatsLC{}
+	lc.lic = snipe.License{ID: 1, Name: "Chrome Upgrade", Seats: 3}
+	for i := 1; i <= 3; i++ {
+		lc.nextSeat = i
+		lc.seats = append(lc.seats, snipe.LicenseSeat{ID: i})
+	}
+	e := New(lc, logrus.New(), WithConcurrency(2))
+
+	spec := snipe.LicenseSpec{Name: "Chrome Upgrade", Seats: 3}
+	desired := []Target{{ID: 101}, {ID: 102}, {ID: 103}, {ID: 104}, {ID: 105}}
+	st, err := e.Reconcile(context.Background(), spec, desired)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if st.CheckedOut != len(desired) {
+		t.Fatalf("checked out %d of %d holders; a pool drained by another writer must be regrown, not failed", st.CheckedOut, len(desired))
+	}
+	for _, want := range []int{101, 102, 103, 104, 105} {
+		found := false
+		for _, s := range lc.seats {
+			if s.AssignedAssetID == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("holder %d never got a seat", want)
+		}
+	}
+}
+
+// scriptedSeatsLC drives the retry path: the pool the engine grows is taken by
+// someone else, and only some of it comes back before the engine re-reads. The
+// engine must count the seats that ARE free when it grows again — growing as if
+// the pool were empty leaves the license padded with seats nobody asked for
+// (and, on a paid license, billed for).
+type scriptedSeatsLC struct {
+	stubLC
+	lists int
+}
+
+func (s *scriptedSeatsLC) ListSeats(ctx context.Context, licenseID int) ([]snipe.LicenseSeat, error) {
+	s.mu.Lock()
+	s.lists++
+	switch s.lists {
+	case 2:
+		// The freshly grown seats are taken before the engine can use them.
+		for i := range s.seats {
+			if s.seats[i].AssignedUserID == 0 && s.seats[i].AssignedAssetID == 0 {
+				s.seats[i].AssignedAssetID = 9999
+			}
+		}
+	case 3:
+		// By the re-read, all but one have been handed back.
+		released := 0
+		for i := range s.seats {
+			if s.seats[i].AssignedAssetID == 9999 && released < 3 {
+				s.seats[i].AssignedAssetID = 0
+				released++
+			}
+		}
+	}
+	seats := append([]snipe.LicenseSeat(nil), s.seats...)
+	s.mu.Unlock()
+	return seats, nil
+}
+
+func TestReconcileCountsFreeSeatsBeforeRegrowing(t *testing.T) {
+	lc := &scriptedSeatsLC{}
+	lc.lic = snipe.License{ID: 1, Name: "Chrome Upgrade", Seats: 2}
+	for i := 1; i <= 2; i++ {
+		lc.nextSeat = i
+		lc.seats = append(lc.seats, snipe.LicenseSeat{ID: i})
+	}
+	e := New(lc, logrus.New(), WithConcurrency(2))
+
+	desired := []Target{{ID: 101}, {ID: 102}, {ID: 103}, {ID: 104}}
+	st, err := e.Reconcile(context.Background(), snipe.LicenseSpec{Name: "Chrome Upgrade", Seats: 2}, desired)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if st.CheckedOut != len(desired) {
+		t.Fatalf("checked out %d of %d holders", st.CheckedOut, len(desired))
+	}
+	// 4 seats after the first growth, then one more for the single holder the
+	// three released seats could not cover. Ignoring those three would have
+	// created four.
+	if len(lc.seats) != 5 {
+		t.Errorf("seat total = %d, want 5 (the released seats must count toward the regrowth)", len(lc.seats))
+	}
+}
+
+// A pool that another writer keeps emptying must end in reported errors, not an
+// unbounded grow/checkout loop.
+func TestReconcileRegrowAttemptsAreBounded(t *testing.T) {
+	lc := &alwaysStolenLC{}
+	lc.lic = snipe.License{ID: 1, Name: "Chrome Upgrade", Seats: 1}
+	lc.nextSeat = 1
+	lc.seats = append(lc.seats, snipe.LicenseSeat{ID: 1})
+	e := New(lc, logrus.New(), WithConcurrency(1))
+
+	_, err := e.Reconcile(context.Background(), snipe.LicenseSpec{Name: "Chrome Upgrade", Seats: 1}, []Target{{ID: 101}})
+	if err == nil {
+		t.Fatal("a pool that is always drained must end in an error, not a loop")
+	}
+	if lc.grows > regrowMaxAttempts+1 {
+		t.Errorf("grew %d times; the initial sizing plus at most %d regrowths were expected", lc.grows, regrowMaxAttempts)
+	}
+}
+
+// alwaysStolenLC never leaves a free seat, however many are created.
+type alwaysStolenLC struct {
+	stubLC
+	grows int
+}
+
+func (s *alwaysStolenLC) ListSeats(ctx context.Context, licenseID int) ([]snipe.LicenseSeat, error) {
+	s.mu.Lock()
+	for i := range s.seats {
+		if s.seats[i].AssignedUserID == 0 && s.seats[i].AssignedAssetID == 0 {
+			s.seats[i].AssignedAssetID = 9999
+		}
+	}
+	seats := append([]snipe.LicenseSeat(nil), s.seats...)
+	s.mu.Unlock()
+	return seats, nil
+}
+
+func (s *alwaysStolenLC) EnsureSeats(ctx context.Context, licenseID, total int) error {
+	s.mu.Lock()
+	s.grows++
+	s.mu.Unlock()
+	return s.stubLC.EnsureSeats(ctx, licenseID, total)
+}
