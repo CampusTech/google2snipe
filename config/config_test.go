@@ -230,3 +230,33 @@ sync:
 		t.Errorf("mapping path = %q, want recentUsers.0.email", got.Path)
 	}
 }
+
+// The JWT is minted with exactly these scopes, so license sync's directory-user
+// lookups 403 if the default set omits the user scope — regardless of what the
+// domain-wide delegation grant allows.
+func TestDefaultScopesCoverDirectoryUsers(t *testing.T) {
+	c := &Config{}
+	c.applyDefaults()
+	want := map[string]bool{
+		"https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly": false,
+		"https://www.googleapis.com/auth/admin.directory.user.readonly":            false,
+	}
+	for _, s := range c.Google.Scopes {
+		if _, ok := want[s]; ok {
+			want[s] = true
+		}
+	}
+	for s, found := range want {
+		if !found {
+			t.Errorf("default scopes missing %s (got %v)", s, c.Google.Scopes)
+		}
+	}
+
+	// An explicit list still wins.
+	c = &Config{}
+	c.Google.Scopes = []string{"https://example.test/custom"}
+	c.applyDefaults()
+	if len(c.Google.Scopes) != 1 {
+		t.Errorf("configured scopes were overridden: %v", c.Google.Scopes)
+	}
+}

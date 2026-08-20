@@ -55,6 +55,18 @@ func (t *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
+// DefaultScopes are the read-only scopes requested when google.scopes is not
+// set in config. The token is minted with exactly these, so a scope missing
+// here fails with ACCESS_TOKEN_SCOPE_INSUFFICIENT even when the domain-wide
+// delegation grant allows it — which is what happened to license sync's user
+// lookups when this defaulted to the ChromeOS scope alone.
+func DefaultScopes() []string {
+	return []string{
+		admin.AdminDirectoryDeviceChromeosReadonlyScope,
+		admin.AdminDirectoryUserReadonlyScope,
+	}
+}
+
 // New builds an authenticated Client using a service-account key with
 // domain-wide delegation impersonating cfg.ImpersonateSubject.
 func New(cfg cfgpkg.GoogleConfig, logger *logrus.Logger) (*Client, error) {
@@ -67,7 +79,7 @@ func New(cfg cfgpkg.GoogleConfig, logger *logrus.Logger) (*Client, error) {
 	}
 	scopes := cfg.Scopes
 	if len(scopes) == 0 {
-		scopes = []string{admin.AdminDirectoryDeviceChromeosReadonlyScope}
+		scopes = DefaultScopes()
 	}
 	jwtCfg, err := google.JWTConfigFromJSON(keyData, scopes...)
 	if err != nil {

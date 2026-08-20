@@ -205,7 +205,13 @@ func (c *Config) applyDefaults() {
 	}
 	c.Google.Projection = strings.ToLower(c.Google.Projection)
 	if len(c.Google.Scopes) == 0 {
-		c.Google.Scopes = []string{"https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly"}
+		// Keep in step with google.DefaultScopes: the JWT is minted with exactly
+		// these, so listing directory users needs its scope here as well as in
+		// the domain-wide delegation grant.
+		c.Google.Scopes = []string{
+			"https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly",
+			"https://www.googleapis.com/auth/admin.directory.user.readonly",
+		}
 	}
 	if c.Sync.CacheDir == "" {
 		c.Sync.CacheDir = ".cache"
