@@ -60,12 +60,7 @@ func (t *debugTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // here fails with ACCESS_TOKEN_SCOPE_INSUFFICIENT even when the domain-wide
 // delegation grant allows it — which is what happened to license sync's user
 // lookups when this defaulted to the ChromeOS scope alone.
-func DefaultScopes() []string {
-	return []string{
-		admin.AdminDirectoryDeviceChromeosReadonlyScope,
-		admin.AdminDirectoryUserReadonlyScope,
-	}
-}
+func DefaultScopes() []string { return cfgpkg.DefaultGoogleScopes() }
 
 // New builds an authenticated Client using a service-account key with
 // domain-wide delegation impersonating cfg.ImpersonateSubject.

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -252,11 +253,12 @@ func TestDefaultScopesCoverDirectoryUsers(t *testing.T) {
 		}
 	}
 
-	// An explicit list still wins.
+	// An explicit list still wins, unchanged.
+	custom := []string{"https://example.test/custom"}
 	c = &Config{}
-	c.Google.Scopes = []string{"https://example.test/custom"}
+	c.Google.Scopes = custom
 	c.applyDefaults()
-	if len(c.Google.Scopes) != 1 {
-		t.Errorf("configured scopes were overridden: %v", c.Google.Scopes)
+	if !reflect.DeepEqual(c.Google.Scopes, custom) {
+		t.Errorf("configured scopes = %v, want them left as %v", c.Google.Scopes, custom)
 	}
 }

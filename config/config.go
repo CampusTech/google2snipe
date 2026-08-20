@@ -131,6 +131,21 @@ var KnownTransforms = map[string]bool{
 	"date_only": true, "datetime": true,
 }
 
+// DefaultGoogleScopes are the OAuth scopes requested when google.scopes is not
+// configured. The service-account JWT is minted with exactly these, so a scope
+// missing here fails with ACCESS_TOKEN_SCOPE_INSUFFICIENT even when the
+// domain-wide delegation grant allows it.
+//
+// This is the single source of truth: google.DefaultScopes returns it, and
+// TestDefaultScopesMatchAdminConstants pins the strings to the Admin SDK's own
+// constants.
+func DefaultGoogleScopes() []string {
+	return []string{
+		"https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly",
+		"https://www.googleapis.com/auth/admin.directory.user.readonly",
+	}
+}
+
 // FullOnlyPaths are gjson path prefixes only populated under projection=full.
 var FullOnlyPaths = map[string]bool{
 	"recentUsers": true, "activeTimeRanges": true, "cpuStatusReports": true,
@@ -205,13 +220,7 @@ func (c *Config) applyDefaults() {
 	}
 	c.Google.Projection = strings.ToLower(c.Google.Projection)
 	if len(c.Google.Scopes) == 0 {
-		// Keep in step with google.DefaultScopes: the JWT is minted with exactly
-		// these, so listing directory users needs its scope here as well as in
-		// the domain-wide delegation grant.
-		c.Google.Scopes = []string{
-			"https://www.googleapis.com/auth/admin.directory.device.chromeos.readonly",
-			"https://www.googleapis.com/auth/admin.directory.user.readonly",
-		}
+		c.Google.Scopes = DefaultGoogleScopes()
 	}
 	if c.Sync.CacheDir == "" {
 		c.Sync.CacheDir = ".cache"
