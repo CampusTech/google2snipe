@@ -39,7 +39,10 @@ snipe_it:
 
 sync:
   dry_run: false
-  rate_limit: true              # token-bucket limit on Snipe-IT writes
+  # Snipe-IT plan whose request budget to pace against: basic (120/min),
+  # small_business (240/min), or dedicated (no client-side limit). The client
+  # tightens further from the API's X-Ratelimit-* response headers.
+  rate_limit: small_business
   concurrency: 8                # parallel Snipe-IT workers; 1 = serial
   update_only: false
   set_name: false

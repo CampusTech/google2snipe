@@ -15,28 +15,19 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func TestRetryAfterDurationParsesAndClamps(t *testing.T) {
-	cases := []struct {
-		in   string
-		want time.Duration
-		ok   bool
-	}{
-		{"", 0, false},
-		{"5", 5 * time.Second, true},
-		{"0", 0, true},               // present zero => retry immediately (distinct from absent)
-		{"999999", maxBackoff, true}, // must clamp to the cap, not sleep for days
-		{"-3", 0, false},
-		{"banana", 0, false}, // HTTP-date / garbage => treated as absent
+// newTestLicenseClient builds a license client over the shared Snipe client, as
+// production does, so both use one connection and one rate limiter.
+func newTestLicenseClient(t *testing.T, url string, dryRun bool) *LicenseClient {
+	t.Helper()
+	c, err := New(url, "k", dryRun, "dedicated", logrus.New())
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
-		h := http.Header{}
-		h.Set("Retry-After", c.in)
-		got, ok := retryAfterDuration(h)
-		if got != c.want || ok != c.ok {
-			t.Errorf("retryAfterDuration(%q) = (%v, %v), want (%v, %v)", c.in, got, ok, c.want, c.ok)
-		}
-	}
+	return NewLicenseClient(c)
 }
+
+// Retry-After parsing and clamping now live in go-snipeit (ParseRateLimit and
+// RetryPolicy.MaxBackoff) and are covered by its tests.
 
 func TestLicenseClientRetriesThenSucceeds(t *testing.T) {
 	var calls int32
@@ -49,7 +40,7 @@ func TestLicenseClientRetriesThenSucceeds(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success"}`))
 	}))
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	// CheckoutSeatToAsset issues a single PATCH through do(); it must ride out the 429s.
 	if err := c.CheckoutSeatToAsset(context.Background(), 1, 2, 3); err != nil {
 		t.Fatalf("CheckoutSeatToAsset should retry past 429s and succeed, got %v", err)
@@ -67,7 +58,7 @@ func TestLicenseClientGivesUpAfterPersistent429(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	err := c.CheckoutSeatToAsset(context.Background(), 1, 2, 3)
 	if err == nil || !strings.Contains(err.Error(), "429") {
 		t.Fatalf("want a 429 error after exhausting retries, got %v", err)
@@ -100,7 +91,7 @@ func TestLicenseClientRetriesDroppedConnection(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success"}`))
 	}))
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	// CheckoutSeatToAsset issues a PATCH (idempotent); the dropped first connection must be
 	// retried and the second attempt must succeed.
 	if err := c.CheckoutSeatToAsset(context.Background(), 3, 3045, 999); err != nil {
@@ -122,7 +113,7 @@ func TestLicenseClientRetries5xxOnGet(t *testing.T) {
 		_, _ = w.Write([]byte(`{"total":0,"rows":[]}`))
 	}))
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	if _, err := c.ListLicenses(context.Background()); err != nil {
 		t.Fatalf("ListLicenses should retry a 5xx and succeed, got %v", err)
 	}
@@ -132,7 +123,7 @@ func TestLicenseClientRetries5xxOnGet(t *testing.T) {
 }
 
 func TestLicenseClientDryRunSentinel(t *testing.T) {
-	c := NewLicenseClient("https://snipe.invalid", "key", true /*dryRun*/, logrus.New())
+	c := newTestLicenseClient(t, "https://snipe.invalid", true)
 	// EnsureSeats is a pure mutator: in dry-run it must return ErrDryRun before any HTTP.
 	if err := c.EnsureSeats(context.Background(), 1, 5); !errors.Is(err, ErrDryRun) {
 		t.Fatalf("EnsureSeats dry-run = %v, want ErrDryRun", err)
@@ -164,7 +155,7 @@ func TestEnsureLicenseClampsCreateSeats(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success","payload":{"id":7,"name":"Big","seats":10000}}`))
 	}))
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	if _, err := c.EnsureLicense(context.Background(), LicenseSpec{Name: "Big", CategoryID: 1, Seats: 13000}); err != nil {
 		t.Fatalf("EnsureLicense: %v", err)
 	}
@@ -197,7 +188,7 @@ func TestEnsureSeatsStepsPastChangeLimit(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success"}`))
 	}))
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	if err := c.EnsureSeats(context.Background(), 7, 25000); err != nil {
 		t.Fatalf("EnsureSeats: %v", err)
 	}
@@ -218,15 +209,15 @@ func TestEnsureLicenseSurfacesHTTPError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"total":0,"rows":[]}`)) // empty list so create is attempted
 	}))
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "key", false /*not dry-run*/, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	_, err := c.EnsureLicense(context.Background(), LicenseSpec{Name: "X", CategoryID: 1, Seats: 1})
-	if err == nil || !strings.Contains(err.Error(), "HTTP 422") {
+	if err == nil || !strings.Contains(err.Error(), "422") {
 		t.Fatalf("want HTTP 422 error, got %v", err)
 	}
 }
 
 func TestSeatMutatorsDryRun(t *testing.T) {
-	c := NewLicenseClient("https://snipe.invalid", "k", true /*dryRun*/, logrus.New())
+	c := newTestLicenseClient(t, "https://snipe.invalid", true)
 	if err := c.CheckoutSeatToUser(context.Background(), 1, 2, 3); !errors.Is(err, ErrDryRun) {
 		t.Fatalf("CheckoutSeatToUser = %v", err)
 	}
@@ -249,7 +240,7 @@ func TestListSeatsParsesAssignments(t *testing.T) {
 		_, _ = w.Write([]byte(body))
 	}))
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	seats, err := c.ListSeats(context.Background(), 42)
 	if err != nil {
 		t.Fatal(err)
@@ -278,7 +269,7 @@ func TestEnsureLicenseDryRunSkipsCreate(t *testing.T) {
 		_, _ = w.Write([]byte(`{"total":0,"rows":[]}`)) // empty license list
 	}))
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "key", true /*dryRun*/, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, true)
 	_, err := c.EnsureLicense(context.Background(), LicenseSpec{Name: "X", CategoryID: 1, Seats: 1})
 	if !errors.Is(err, ErrDryRun) {
 		t.Fatalf("EnsureLicense dry-run = %v, want ErrDryRun", err)
@@ -303,7 +294,7 @@ func TestEnsureLicenseCategoryCreates(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	id, err := c.EnsureLicenseCategory(context.Background(), "Software Licenses")
 	if err != nil {
 		t.Fatal(err)
@@ -328,7 +319,7 @@ func TestEnsureLicenseCategoryFindsExisting(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	id, err := c.EnsureLicenseCategory(context.Background(), "software licenses") // case-insensitive
 	if err != nil {
 		t.Fatal(err)
@@ -353,7 +344,7 @@ func TestEnsureLicenseUpdatesExisting(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false /*not dry-run*/, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 	lic, err := c.EnsureLicense(context.Background(), LicenseSpec{Name: "X", CostPerSeat: 9.99, CategoryID: 2, Reassignable: true, Seats: 3})
 	if err != nil {
 		t.Fatal(err)
@@ -364,8 +355,9 @@ func TestEnsureLicenseUpdatesExisting(t *testing.T) {
 	if patched == nil {
 		t.Fatal("existing license was not updated (no PATCH issued)")
 	}
-	if patched["purchase_cost"] != 9.99 {
-		t.Errorf("purchase_cost = %v, want 9.99", patched["purchase_cost"])
+	// Snipe-IT takes the cost as a formatted string on write.
+	if patched["purchase_cost"] != "9.99" {
+		t.Errorf("purchase_cost = %v, want \"9.99\"", patched["purchase_cost"])
 	}
 }
 
@@ -392,7 +384,7 @@ func TestLicenseClientCancelAbortsBackoff(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := NewLicenseClient(srv.URL, "k", false, logrus.New())
+	c := newTestLicenseClient(t, srv.URL, false)
 
 	// Cancel only once the first 429 has been returned and the client has had a moment to
 	// enter the ~1s Retry-After backoff sleep.

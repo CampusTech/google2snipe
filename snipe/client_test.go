@@ -6,14 +6,17 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
+	snipeit "github.com/michellepellon/go-snipeit"
 	"github.com/sirupsen/logrus"
 )
 
 func TestDryRunBlocksCreate(t *testing.T) {
-	c, err := New("https://snipe.invalid", "key", true /*dryRun*/, false, logrus.New())
+	c, err := New("https://snipe.invalid", "key", true /*dryRun*/, "dedicated", logrus.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +39,7 @@ func TestCreateAssetRetriesOn429(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success","payload":{"id":7,"asset_tag":"A","serial":"S"}}`))
 	}))
 	defer srv.Close()
-	c, err := New(srv.URL, "k", false, false, logrus.New())
+	c, err := New(srv.URL, "k", false, "dedicated", logrus.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +55,33 @@ func TestCreateAssetRetriesOn429(t *testing.T) {
 	}
 }
 
-func TestCreateAssetRetriesOn5xx(t *testing.T) {
+// A create that fails with a 5xx may already have landed server-side, so it
+// must NOT be replayed — a retry would risk a duplicate asset. Reads and
+// absolute updates are still retried.
+func TestCreateAssetNotRetriedOn5xx(t *testing.T) {
+	var n int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&n, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(503)
+		_, _ = w.Write([]byte(`{"status":"error","messages":"unavailable"}`))
+	}))
+	defer srv.Close()
+	c, err := New(srv.URL, "k", false, "dedicated", logrus.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.CreateAsset(context.Background(), Asset{Serial: "S", ModelID: 1, StatusID: 1}); err == nil {
+		t.Fatal("expected the 503 to surface instead of being retried")
+	}
+	if got := atomic.LoadInt32(&n); got != 1 {
+		t.Fatalf("POST sent %d times, want 1 (a create must not be replayed after a 5xx)", got)
+	}
+}
+
+// A PATCH carries an absolute update here, so replaying it is safe and a
+// transient 5xx should not fail the sync.
+func TestPatchAssetRetriesOn5xx(t *testing.T) {
 	var n int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -64,11 +93,11 @@ func TestCreateAssetRetriesOn5xx(t *testing.T) {
 		_, _ = w.Write([]byte(`{"status":"success","payload":{"id":8,"asset_tag":"A","serial":"S"}}`))
 	}))
 	defer srv.Close()
-	c, err := New(srv.URL, "k", false, false, logrus.New())
+	c, err := New(srv.URL, "k", false, "dedicated", logrus.New())
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := c.CreateAsset(context.Background(), Asset{Serial: "S", ModelID: 1, StatusID: 1})
+	a, err := c.PatchAsset(context.Background(), 8, Asset{StatusID: 2})
 	if err != nil {
 		t.Fatalf("expected success after 503 retry, got %v", err)
 	}
@@ -77,6 +106,19 @@ func TestCreateAssetRetriesOn5xx(t *testing.T) {
 	}
 	if atomic.LoadInt32(&n) < 2 {
 		t.Fatalf("expected a retry on 503 (>=2 requests), got %d", n)
+	}
+}
+
+// The plan name selects the pace; an unknown one is a config error, not a
+// silently unlimited client.
+func TestNewRejectsUnknownRatePlan(t *testing.T) {
+	if _, err := New("https://snipe.invalid", "k", true, "enterprise", logrus.New()); err == nil {
+		t.Fatal("expected an unknown rate limit plan to be rejected")
+	}
+	for _, plan := range []string{"", "basic", "small_business", "dedicated"} {
+		if _, err := New("https://snipe.invalid", "k", true, plan, logrus.New()); err != nil {
+			t.Errorf("plan %q: %v", plan, err)
+		}
 	}
 }
 
@@ -101,7 +143,7 @@ func TestListAllAssetsPaginates(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c, err := New(srv.URL, "k", false, false, logrus.New())
+	c, err := New(srv.URL, "k", false, "dedicated", logrus.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,4 +155,47 @@ func TestListAllAssetsPaginates(t *testing.T) {
 		assets[2].Serial != "S3" || assets[3].Serial != "S4" {
 		t.Fatalf("paging failed: %+v", assets)
 	}
+}
+
+// The limiter runs near the cap by design, so a healthy budget must stay at
+// debug and a low one must warn at most once per window — a long sync otherwise
+// buries its real output under thousands of identical lines.
+func TestRateLimitLoggerWarnsSparingly(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+	var mu sync.Mutex
+	warns := 0
+	log.AddHook(&countingHook{mu: &mu, n: &warns})
+	report := rateLimitLogger(log)
+
+	for i := 0; i < 50; i++ {
+		report(snipeit.RateLimit{Valid: true, Limit: 240, Remaining: 200, Reset: 30 * time.Second})
+	}
+	if warns != 0 {
+		t.Fatalf("healthy budget produced %d warnings, want 0", warns)
+	}
+
+	for i := 0; i < 50; i++ {
+		report(snipeit.RateLimit{Valid: true, Limit: 240, Remaining: 5, Reset: 30 * time.Second})
+	}
+	if warns != 1 {
+		t.Fatalf("low budget produced %d warnings, want 1 per window", warns)
+	}
+}
+
+// countingHook counts warn-and-above entries.
+type countingHook struct {
+	mu *sync.Mutex
+	n  *int
+}
+
+func (h *countingHook) Levels() []logrus.Level {
+	return []logrus.Level{logrus.WarnLevel, logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel}
+}
+
+func (h *countingHook) Fire(*logrus.Entry) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	*h.n++
+	return nil
 }

@@ -255,7 +255,7 @@ sync:
 - **Model & manufacturer:** the Snipe-IT model is auto-created from the `model` string. ChromeOS has no separate vendor field, so the manufacturer is derived from the **first token** of the model (e.g. `Lenovo` from `Lenovo 300e Chromebook`), resolved against `snipe_it.manufacturer_ids` (lowercased vendor → ID), auto-created if absent, or `snipe_it.default_manufacturer_id` as a fallback.
 - **Custom-field rejection retry:** if Snipe-IT rejects fields with "not available on this Asset Model's fieldset", the bad keys are stripped and the PATCH is retried once so the rest applies. Re-run `setup` to fix the underlying fieldset.
 - **Cache:** every fetch writes `.cache/devices.json` (ChromeOS devices) and `.cache/users.json` (the Snipe-IT user list used for checkout matching); `--use-cache` replays both without re-paginating the APIs (device raw JSON is restored so gjson mapping still works). Models and manufacturers are always fetched fresh, since they're created during syncs.
-- **Rate limiting:** Snipe-IT writes go through a token-bucket limiter (`sync.rate_limit: true`).
+- **Rate limiting:** every Snipe-IT request — assets *and* licenses — goes through one adaptive limiter, sized by the plan named in `sync.rate_limit`: `basic` (120 req/min), `small_business` (240 req/min, the default), or `dedicated` (no client-side limit). The limiter also reads the API's `X-Ratelimit-Limit`/`-Remaining`/`-Reset` headers on every response and slows down as the window drains, so a shared token or a busy instance throttles this tool instead of tripping 429s. Legacy `true`/`false` values still parse as `small_business`/`dedicated`.
 
 ## Configuration reference
 
@@ -265,7 +265,7 @@ See [`settings.example.yaml`](settings.example.yaml) for a fully-commented templ
 google:      # credentials_file, impersonate_subject, customer_id, projection, org_unit_path, query
 snipe_it:    # url, api_key, default_status_id, default_category_id, default_manufacturer_id,
              # custom_fieldset_id, status_map, manufacturer_ids
-sync:        # dry_run, force, rate_limit, concurrency (default 8; 1=serial), update_only, use_cache,
+sync:        # dry_run, force, rate_limit (basic|small_business|dedicated), concurrency (default 8; 1=serial), update_only, use_cache,
              # cache_dir, set_name, name_template, asset_tag.template, field_mapping (managed by setup),
              # checkout {...}
 licenses:    # enabled, default_license_category_id, chrome {...}, workspace {...}
